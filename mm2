@@ -1,0 +1,188 @@
+--[[
+    Roblox Coin Collector Script (Liquid Flow V9 - MM2 Optimized)
+    Description: Flattened loop architecture with strict MM2 state-checking and thread kill-switches.
+    Features: Physical Kill-Switch, Forced Reset on Full Bag, Anti-re-target logic.
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local humanoid = character:WaitForChild("Humanoid")
+
+-- Configuration
+local COIN_NAME = "Coin_Server"
+local FLY_SPEED = 22 
+local COLLECTION_RADIUS = 0.9 
+local MAX_BAG_CAPACITY = 40 -- Strictly set to 40 as per your feedback
+
+local isRunning = true
+local noclipConnection = nil
+local currentTarget = nil
+local targetQueue = {}
+local blacklistedCoins = {}
+
+-- BAG CHECK: Returns true if the MM2 coin bag is full
+local function isBagFull()
+    local coinContainer = player:FindFirstChild("CoinContainer")
+    if coinContainer then
+        local count = coinContainer:FindFirstChild("CoinValue")
+        if count and count:IsA("ValueBase") then
+            -- Check if we are at or over the limit
+            return count.Value >= MAX_BAG_CAPACITY
+        end
+    end
+    return false
+end
+
+-- STATUS CHECK: Enhanced check to stop logic immediately upon death
+local function isAliveAndInGame()
+    local currentCharacter = player.Character
+    if not currentCharacter or not currentCharacter.Parent then return false end
+    
+    local currentHumanoid = currentCharacter:FindFirstChildOfClass("Humanoid")
+    local currentRoot = currentCharacter:FindFirstChild("HumanoidRootPart")
+    
+    if not currentHumanoid or currentHumanoid.Health <= 0 then
+        return false
+    end
+    
+    if not currentCharacter:IsDescendantOf(workspace) then
+        return false
+    end
+    
+    return currentRoot ~= nil
+end
+
+-- BACKGROUND THREAD: Non-blocking search
+task.spawn(function()
+    while isRunning do
+        if isAliveAndInGame() and not isBagFull() then
+            local coins = {}
+            local normal = workspace:FindFirstChild("Normal")
+            local searchArea = (normal and normal:FindFirstChild("CoinContainer")) or normal or workspace
+
+            for _, object in ipairs(searchArea:GetDescendants()) do
+                if object.Name == COIN_NAME and object:IsA("BasePart") and not blacklistedCoins[object] then
+                    table.insert(coins, {obj = object, dist = (rootPart.Position - object.Position).Magnitude})
+                end
+            end
+            table.sort(coins, function(a, b) return a.dist < b.dist end)
+            
+            local newQueue = {}
+            for _, data in ipairs(coins) do table.insert(newQueue, data.obj) end
+            targetQueue = newQueue
+        end
+        task.wait(0.8) 
+    end
+end)
+
+-- Noclip (Passive)
+local function enableNoclip()
+    if noclipConnection then noclipConnection:Disconnect() end
+    noclipConnection = RunService.Stepped:Connect(function()
+        if not isRunning or not isAliveAndInGame() then return end
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end)
+end
+
+-- FLATTENED MOTION ENGINE
+local function startCollecting()
+    -- Get fresh references for this specific thread
+    local myChar = player.Character
+    if not myChar then return end
+    local myHumanoid = myChar:WaitForChild("Humanoid")
+    local myRoot = myChar:WaitForChild("HumanoidRootPart")
+
+    -- Clean up physics
+    for _, v in ipairs(myRoot:GetChildren()) do
+        if v:IsA("BodyVelocity") or v:IsA("BodyGyro") then v:Destroy() end
+    end
+
+    local bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bv.Velocity = Vector3.zero
+    bv.Parent = myRoot
+
+    local bg = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    bg.CFrame = myRoot.CFrame
+    bg.Parent = myRoot
+
+    myHumanoid.PlatformStand = true 
+
+    while isRunning do
+        RunService.Heartbeat:Wait() 
+
+        -- KILL-SWITCH: Explicit check on the physical parts used by this thread
+        if not myChar or not myChar.Parent or myHumanoid.Health <= 0 or not myRoot or not myRoot.Parent then
+            if bv then bv:Destroy() end
+            if bg then bg:Destroy() end
+            break 
+        end
+
+        -- 1. Check for Bag Full (RESET LOGIC)
+        if isBagFull() then
+            bv.Velocity = Vector3.zero
+            pcall(function() 
+                myHumanoid.Health = 0 
+                myHumanoid:BreakJoints()
+            end)
+            break 
+        end
+
+        -- 2. Targeting
+        if not currentTarget or not currentTarget.Parent or not currentTarget:IsDescendantOf(workspace) or blacklistedCoins[currentTarget] then
+            currentTarget = targetQueue[1]
+            if not currentTarget then
+                bv.Velocity = Vector3.zero
+                continue
+            end
+        end
+
+        -- 3. Movement
+        local dist = (myRoot.Position - currentTarget.Position).Magnitude
+        
+        if dist <= COLLECTION_RADIUS then
+            myRoot.CFrame = CFrame.new(currentTarget.Position) * (myRoot.CFrame - myRoot.Position)
+            
+            local oldTarget = currentTarget
+            blacklistedCoins[oldTarget] = true
+            task.delay(5, function() blacklistedCoins[oldTarget] = nil end)
+            
+            table.remove(targetQueue, 1)
+            local nextTarget = targetQueue[1]
+            
+            if nextTarget and nextTarget.Parent and nextTarget:IsDescendantOf(workspace) then
+                currentTarget = nextTarget
+                bv.Velocity = (currentTarget.Position - myRoot.Position).Unit * FLY_SPEED
+                bg.CFrame = CFrame.new(myRoot.Position, currentTarget.Position)
+            else
+                currentTarget = nil
+                bv.Velocity = Vector3.zero
+            end
+        else
+            bv.Velocity = (currentTarget.Position - myRoot.Position).Unit * FLY_SPEED
+            bg.CFrame = CFrame.new(myRoot.Position, currentTarget.Position)
+        end
+    end
+end
+
+-- Re-init on respawn
+player.CharacterAdded:Connect(function(newChar)
+    task.wait(2.5) -- Wait for character to settle
+    enableNoclip()
+    task.spawn(startCollecting)
+end)
+
+-- Initial Startup
+if isAliveAndInGame() then
+    enableNoclip()
+    task.spawn(startCollecting)
+end
