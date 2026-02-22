@@ -1,7 +1,7 @@
 --[[
-    Roblox Coin Collector Script (Liquid Flow V9 - MM2 Optimized)
-    Description: Flattened loop architecture with strict MM2 state-checking and thread kill-switches.
-    Features: Physical Kill-Switch, Forced Reset on Full Bag, Anti-re-target logic.
+    Roblox Coin Collector Script (Liquid Flow V16 - Aggressive Bag Check)
+    Description: Improved Bag Detection with Immediate Post-Touch Check.
+    Features: Void Insta-Kill, Smooth Motion, Safety Mode, Ghost Filtering.
 ]]
 
 local Players = game:GetService("Players")
@@ -14,175 +14,259 @@ local humanoid = character:WaitForChild("Humanoid")
 
 -- Configuration
 local COIN_NAME = "Coin_Server"
-local FLY_SPEED = 22 
-local COLLECTION_RADIUS = 0.9 
-local MAX_BAG_CAPACITY = 40 -- Strictly set to 40 as per your feedback
+local BASE_FLY_SPEED = 21      
+local SPEED_VARIANCE = 3       
+local COLLECTION_RADIUS = 1.3  
+local MAX_BAG_CAPACITY = 50 
+local USE_TRANSPARENCY = true  
+local SAFE_MODE = true         
+local SAFE_DISTANCE = 45       
 
 local isRunning = true
 local noclipConnection = nil
 local currentTarget = nil
 local targetQueue = {}
 local blacklistedCoins = {}
+local expectedCount = 0 -- Fail-safe counter
 
--- BAG CHECK: Returns true if the MM2 coin bag is full
-local function isBagFull()
-    local coinContainer = player:FindFirstChild("CoinContainer")
-    if coinContainer then
-        local count = coinContainer:FindFirstChild("CoinValue")
-        if count and count:IsA("ValueBase") then
-            -- Check if we are at or over the limit
-            return count.Value >= MAX_BAG_CAPACITY
+-- Utility: Find the Murderer
+local function getMurderer()
+    for _, p in ipairs(Players:GetPlayers()) do
+        local pData = p:FindFirstChild("PlayerData")
+        if pData and pData:FindFirstChild("Role") and pData.Role.Value == "Murderer" then
+            return p.Character and p.Character:FindFirstChild("HumanoidRootPart")
         end
     end
-    return false
+    return nil
 end
 
--- STATUS CHECK: Enhanced check to stop logic immediately upon death
-local function isAliveAndInGame()
-    local currentCharacter = player.Character
-    if not currentCharacter or not currentCharacter.Parent then return false end
-    
-    local currentHumanoid = currentCharacter:FindFirstChildOfClass("Humanoid")
-    local currentRoot = currentCharacter:FindFirstChild("HumanoidRootPart")
-    
-    if not currentHumanoid or currentHumanoid.Health <= 0 then
-        return false
+-- Utility: Check if player is actually in a round
+local function isInRound()
+    local pData = player:FindFirstChild("PlayerData")
+    if pData then
+        local role = pData:FindFirstChild("Role")
+        if role and role.Value ~= "" and role.Value ~= "None" then
+            return true
+        end
     end
-    
-    if not currentCharacter:IsDescendantOf(workspace) then
-        return false
-    end
-    
-    return currentRoot ~= nil
+    return rootPart and rootPart.Position.Y > -50 
 end
 
--- BACKGROUND THREAD: Non-blocking search
+-- IMPROVED BAG CHECK: Multi-Location Verification
+local function getCoinCount()
+    -- Path 1: Standard CoinContainer
+    local container = player:FindFirstChild("CoinContainer")
+    if container then
+        local val = container:FindFirstChild("CoinValue") or container:FindFirstChild("Coins")
+        if val and val:IsA("ValueBase") then return val.Value end
+    end
+    
+    -- Path 2: PlayerGui Scraping
+    local mainGui = player.PlayerGui:FindFirstChild("MainGui")
+    if mainGui then
+        local gameUI = mainGui:FindFirstChild("Game")
+        if gameUI and gameUI:FindFirstChild("CoinBag") and gameUI.CoinBag:FindFirstChild("TextLabel") then
+            local text = gameUI.CoinBag.TextLabel.Text
+            local count = string.match(text, "(%d+)/")
+            if count then return tonumber(count) end
+        end
+    end
+    
+    -- Path 3: Fail-safe internal counter
+    return expectedCount
+end
+
+local function isBagFull()
+    local current = getCoinCount()
+    return current >= MAX_BAG_CAPACITY
+end
+
+-- VOID RESET: Aggressive Loop
+local function resetCharacter()
+    isRunning = false -- Stop motion loop immediately
+    task.spawn(function()
+        local startTime = tick()
+        while tick() - startTime < 5 do -- Attempt for 5 seconds
+            pcall(function()
+                if rootPart then
+                    rootPart.AssemblyLinearVelocity = Vector3.new(0, -500, 0)
+                    rootPart.CFrame = CFrame.new(rootPart.Position.X, -600, rootPart.Position.Z)
+                end
+                if humanoid then
+                    humanoid.Health = 0
+                end
+                if character then
+                    character:BreakJoints()
+                end
+            end)
+            task.wait(0.1)
+        end
+        isRunning = true -- Reset for next life
+    end)
+end
+
+-- BACKGROUND THREAD: Continuous coin scanning
 task.spawn(function()
-    while isRunning do
-        if isAliveAndInGame() and not isBagFull() then
+    while true do
+        if isRunning and character and rootPart and character.Parent and isInRound() then
             local coins = {}
             local normal = workspace:FindFirstChild("Normal")
             local searchArea = (normal and normal:FindFirstChild("CoinContainer")) or normal or workspace
 
             for _, object in ipairs(searchArea:GetDescendants()) do
                 if object.Name == COIN_NAME and object:IsA("BasePart") and not blacklistedCoins[object] then
-                    table.insert(coins, {obj = object, dist = (rootPart.Position - object.Position).Magnitude})
+                    table.insert(coins, {
+                        obj = object, 
+                        dist = (rootPart.Position - object.Position).Magnitude
+                    })
                 end
             end
+            
             table.sort(coins, function(a, b) return a.dist < b.dist end)
             
             local newQueue = {}
             for _, data in ipairs(coins) do table.insert(newQueue, data.obj) end
             targetQueue = newQueue
+        else
+            targetQueue = {}
         end
-        task.wait(0.8) 
+        task.wait(0.5)
     end
 end)
 
--- Noclip (Passive)
+-- Noclip Logic
+local function updateVisuals(enabled)
+    if not character then return end
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = not enabled
+            if enabled and USE_TRANSPARENCY and part.Name ~= "HumanoidRootPart" then
+                part.LocalTransparencyModifier = 0.5
+            else
+                part.LocalTransparencyModifier = 0
+            end
+        end
+    end
+end
+
 local function enableNoclip()
     if noclipConnection then noclipConnection:Disconnect() end
     noclipConnection = RunService.Stepped:Connect(function()
-        if not isRunning or not isAliveAndInGame() then return end
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = false
-            end
-        end
+        updateVisuals(true)
     end)
 end
 
--- FLATTENED MOTION ENGINE
+-- MOTION ENGINE
 local function startCollecting()
-    -- Get fresh references for this specific thread
     local myChar = player.Character
     if not myChar then return end
     local myHumanoid = myChar:WaitForChild("Humanoid")
     local myRoot = myChar:WaitForChild("HumanoidRootPart")
 
-    -- Clean up physics
     for _, v in ipairs(myRoot:GetChildren()) do
         if v:IsA("BodyVelocity") or v:IsA("BodyGyro") then v:Destroy() end
     end
 
     local bv = Instance.new("BodyVelocity")
-    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
     bv.Velocity = Vector3.zero
     bv.Parent = myRoot
 
     local bg = Instance.new("BodyGyro")
-    bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    bg.P = 3000 
+    bg.D = 500
     bg.CFrame = myRoot.CFrame
     bg.Parent = myRoot
 
     myHumanoid.PlatformStand = true 
+    local lastCoinTime = tick()
 
     while isRunning do
         RunService.Heartbeat:Wait() 
 
-        -- KILL-SWITCH: Explicit check on the physical parts used by this thread
-        if not myChar or not myChar.Parent or myHumanoid.Health <= 0 or not myRoot or not myRoot.Parent then
-            if bv then bv:Destroy() end
-            if bg then bg:Destroy() end
-            break 
-        end
-
-        -- 1. Check for Bag Full (RESET LOGIC)
+        -- Check Bag BEFORE moving
         if isBagFull() then
-            bv.Velocity = Vector3.zero
-            pcall(function() 
-                myHumanoid.Health = 0 
-                myHumanoid:BreakJoints()
-            end)
+            resetCharacter()
             break 
         end
 
-        -- 2. Targeting
-        if not currentTarget or not currentTarget.Parent or not currentTarget:IsDescendantOf(workspace) or blacklistedCoins[currentTarget] then
+        if not myChar.Parent or not myRoot.Parent or myHumanoid.Health <= 0 or not isInRound() then 
+            break 
+        end
+
+        if SAFE_MODE then
+            local murdererRoot = getMurderer()
+            if murdererRoot and (myRoot.Position - murdererRoot.Position).Magnitude < SAFE_DISTANCE then
+                bv.Velocity = Vector3.zero
+                continue
+            end
+        end
+
+        if not currentTarget or not currentTarget.Parent or blacklistedCoins[currentTarget] then
             currentTarget = targetQueue[1]
+            lastCoinTime = tick()
             if not currentTarget then
                 bv.Velocity = Vector3.zero
                 continue
             end
         end
 
-        -- 3. Movement
+        if tick() - lastCoinTime > 3.5 then
+            blacklistedCoins[currentTarget] = true
+            currentTarget = nil
+            continue
+        end
+
         local dist = (myRoot.Position - currentTarget.Position).Magnitude
+        local currentSpeed = BASE_FLY_SPEED + math.random(-SPEED_VARIANCE, SPEED_VARIANCE)
         
         if dist <= COLLECTION_RADIUS then
-            myRoot.CFrame = CFrame.new(currentTarget.Position) * (myRoot.CFrame - myRoot.Position)
+            -- Immediate Touch Logic
+            myRoot.CFrame = CFrame.new(currentTarget.Position)
+            expectedCount = expectedCount + 1 -- Increment fail-safe counter
             
             local oldTarget = currentTarget
             blacklistedCoins[oldTarget] = true
-            task.delay(5, function() blacklistedCoins[oldTarget] = nil end)
+            task.delay(10, function() blacklistedCoins[oldTarget] = nil end)
             
             table.remove(targetQueue, 1)
-            local nextTarget = targetQueue[1]
+            currentTarget = nil
+            lastCoinTime = tick()
             
-            if nextTarget and nextTarget.Parent and nextTarget:IsDescendantOf(workspace) then
-                currentTarget = nextTarget
-                bv.Velocity = (currentTarget.Position - myRoot.Position).Unit * FLY_SPEED
-                bg.CFrame = CFrame.new(myRoot.Position, currentTarget.Position)
-            else
-                currentTarget = nil
-                bv.Velocity = Vector3.zero
+            -- FORCED CHECK IMMEDIATELY AFTER TOUCH
+            if isBagFull() then
+                resetCharacter()
+                break
             end
         else
-            bv.Velocity = (currentTarget.Position - myRoot.Position).Unit * FLY_SPEED
+            local direction = (currentTarget.Position - myRoot.Position).Unit
+            bv.Velocity = direction * currentSpeed
             bg.CFrame = CFrame.new(myRoot.Position, currentTarget.Position)
         end
     end
+    
+    if bv then bv:Destroy() end
+    if bg then bg:Destroy() end
 end
 
 -- Re-init on respawn
 player.CharacterAdded:Connect(function(newChar)
-    task.wait(2.5) -- Wait for character to settle
-    enableNoclip()
-    task.spawn(startCollecting)
+    character = newChar
+    rootPart = character:WaitForChild("HumanoidRootPart")
+    humanoid = character:WaitForChild("Humanoid")
+    expectedCount = 0 -- Reset counter for new life
+    isRunning = true
+    
+    task.wait(4) 
+    if isInRound() then
+        enableNoclip()
+        task.spawn(startCollecting)
+    end
 end)
 
 -- Initial Startup
-if isAliveAndInGame() then
+if isInRound() then
     enableNoclip()
     task.spawn(startCollecting)
 end
