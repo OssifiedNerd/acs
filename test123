@@ -2,10 +2,10 @@ local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then return end
 local Workspace = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualUser = game:GetService("VirtualUser")
 local Camera = Workspace.CurrentCamera
 
 local MultiGrinder = {}
@@ -13,14 +13,15 @@ MultiGrinder.__index = MultiGrinder
 
 -- CONFIGURATION
 local CONFIG = {
-    ScriptName = "Studlands (Fixed V1)",
+    ScriptName = "Studlands (Safe Distance Edition)",
     DefaultMode = "Combat", 
-    FarmSpeed = 0.25, -- Slightly increased to reduce lag
+    FarmSpeed = 0.25,
+    SpecialAttackCooldown = 0.15,
     
     FrameWidth = 260, 
     TitleBarHeight = 35, 
     TabBarHeight = 30, 
-    ContentAreaHeight = 220,
+    ContentAreaHeight = 260, -- Increased for new UI elements
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
@@ -32,6 +33,8 @@ local CONFIG = {
     AccentColor = Color3.fromRGB(0, 100, 200), 
     ToggleOnColor = Color3.fromRGB(0, 180, 0), 
     ToggleOffColor = Color3.fromRGB(180, 0, 0), 
+    SpecialAttackColor = Color3.fromRGB(255, 100, 0),
+    DistanceColor = Color3.fromRGB(100, 100, 255), -- Blue for distance features
     InputBackgroundColor = Color3.fromRGB(50, 50, 60),
 
     CloseButtonBaseColor = Color3.fromRGB(200, 0, 0), 
@@ -42,7 +45,7 @@ local CONFIG = {
     Combat = {
         ToolName = "Unstable Cylindery Hammer", 
         TargetNames = {"Crab Champion"}, 
-        TeleportOffset = Vector3.new(0, 5, 5), 
+        TeleportOffset = Vector3.new(0, 5, 5), -- Fallback if safe distance off
         CombatPriorityAreaScanRadius = 50, 
         CombatPriorityAreaScanTime = 3,
     },
@@ -50,13 +53,12 @@ local CONFIG = {
     Mining = {
         ToolName = "Eternium Pickaxe",
         TargetNames = {"Ore"},
-        TeleportOffset = Vector3.new(0, 5, 2), 
+        TeleportOffset = Vector3.new(0, 3, 2), -- Fallback if safe distance off
         MiningPriorityAreaScanRadius = 30, 
         MiningPriorityAreaScanTime = 3,
     },
 }
 
--- FIXED: Correct remote paths based on your working code
 local function getRemotes()
     local remotes = {}
     local success, err = pcall(function()
@@ -73,7 +75,6 @@ local function getRemotes()
     return remotes
 end
 
--- CONSTRUCTOR & STATE
 function MultiGrinder:new()
     local self = setmetatable({
         Enabled = false, 
@@ -101,6 +102,16 @@ function MultiGrinder:new()
         LastKnownPosition = nil,
         TeleportOnRespawnEnabled = true,
         AutoBlockEnabled = false,
+        
+        -- Special Attack
+        SpecialAttackEnabled = false,
+        SpecialAttackThread = nil,
+        
+        -- ADDED: Safe Distance System
+        SafeDistanceEnabled = false,
+        CombatSafeDistance = 10, -- studs away from enemy (safe range)
+        MiningSafeDistance = 1,  -- studs away from ore (very close/inside for hitbox),
+        MiningHitboxMode = false, -- Attempts to mine from multiple angles rapidly if true
 
         PriorityAreas = {}, 
         PriorityAreaEnabled = false,
@@ -121,15 +132,19 @@ function MultiGrinder:new()
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
         IsMinimized = false,
         
-        -- OPTIMIZATION: Cache for targets
+        -- Anti-lag optimizations
         TargetCache = {},
         LastSearchTime = 0,
-        SearchCooldown = 0.3, -- Only search every 0.3s instead of every frame
+        SearchCooldown = 0.3,
+        LastAttackTime = 0,
+        AttackCooldown = 0.1,
+        LastMiningAngle = 0, -- For mining hitbox mode rotation
         
     }, MultiGrinder)
 
     self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
     self:LoadSettings()
+    self:SetupAntiAfk()
 
     LocalPlayer.CharacterAdded:Connect(function(character)
         task.wait(0.5)
@@ -157,7 +172,51 @@ function MultiGrinder:new()
     return self
 end
 
--- CORE HANDLERS
+function MultiGrinder:SetupAntiAfk()
+    LocalPlayer.Idled:Connect(function()
+        VirtualUser:Button2Down(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
+        task.wait(1)
+        VirtualUser:Button2Up(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
+    end)
+end
+
+function MultiGrinder:StartSpecialAttack()
+    if self.SpecialAttackThread then return end
+    
+    self.SpecialAttackThread = task.spawn(function()
+        while self.SpecialAttackEnabled and self.Enabled do
+            local success, err = pcall(function()
+                local char = LocalPlayer.Character
+                if not char then return end
+                
+                local toolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
+                local tool = char:FindFirstChild(toolName)
+                
+                if tool and self.Remotes.UseItem then
+                    local args = {
+                        [1] = tool,
+                        [2] = true,
+                        [5] = 1.1039999771118163
+                    }
+                    self.Remotes.UseItem:FireServer(unpack(args))
+                end
+            end)
+            
+            if not success then
+                warn("[Multi-Bot] Special attack error: " .. tostring(err))
+            end
+            
+            task.wait(CONFIG.SpecialAttackCooldown)
+        end
+        
+        self.SpecialAttackThread = nil
+    end)
+end
+
+function MultiGrinder:StopSpecialAttack()
+    self.SpecialAttackEnabled = false
+end
+
 function MultiGrinder:getHumanoidRootPart()
     local char = LocalPlayer.Character
     if not char then return nil end
@@ -173,12 +232,11 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
--- OPTIMIZED: Cached and limited search to reduce lag
 function MultiGrinder:findClosestTarget(position, names)
     local currentTime = tick()
     if currentTime - self.LastSearchTime < self.SearchCooldown and self.TargetCache.LastPosition then
         local dist = (position - self.TargetCache.LastPosition).Magnitude
-        if dist < 5 then -- Only use cache if we haven't moved much
+        if dist < 5 then
             return self.TargetCache.Target, self.TargetCache.Key
         end
     end
@@ -187,7 +245,6 @@ function MultiGrinder:findClosestTarget(position, names)
     local closestTargetKey = nil 
     local minDistance = math.huge
     
-    -- Search in Workspace but with early exit optimization
     local children = Workspace:GetChildren()
     for _, obj in ipairs(children) do
         for _, name in ipairs(names) do
@@ -209,7 +266,6 @@ function MultiGrinder:findClosestTarget(position, names)
         end
     end
     
-    -- Cache results
     self.LastSearchTime = currentTime
     self.TargetCache = {
         Target = closestTargetPart,
@@ -258,7 +314,7 @@ function MultiGrinder:findClosestResourceInArea(position, radius, names)
                 local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
                 if targetPart and targetPart.Parent ~= LocalPlayer.Character then
                     local parentModel = targetPart.Parent
-                    if not parentModel:FindFirstChildOfClass("Humanoid") then -- It's a resource
+                    if not parentModel:FindFirstChildOfClass("Humanoid") then
                         if not self.IgnoredTargets[targetPart] then
                             local dist = (targetPart.Position - position).Magnitude
                             if dist <= radius and dist < minDistance then
@@ -276,14 +332,19 @@ function MultiGrinder:findClosestResourceInArea(position, radius, names)
     return closestTargetPart, closestTargetKey
 end
 
--- FIXED: Use the working attack method you provided
 function MultiGrinder:simulateAction(toolInstance)
     if not self.Remotes.UseItem or not toolInstance then return end
+    
+    local currentTime = tick()
+    if currentTime - self.LastAttackTime < self.AttackCooldown then
+        return
+    end
+    self.LastAttackTime = currentTime
     
     local args = {
         [1] = toolInstance,
         [2] = false,
-        [5] = 1.1039999771118163 -- The timing value from your working code
+        [5] = 1.1039999771118163
     }
     
     pcall(function()
@@ -291,7 +352,6 @@ function MultiGrinder:simulateAction(toolInstance)
     end)
 end
 
--- FIXED: Use the working equip method you provided
 function MultiGrinder:equipTool(toolName)
     if not self.Remotes.EquipItem then return false end
     
@@ -310,6 +370,61 @@ local function restoreCamera(self)
     if self.OriginalCameraCFrame then 
         Camera.CFrame = self.OriginalCameraCFrame 
         self.OriginalCameraCFrame = nil 
+    end
+end
+
+-- ADDED: Calculate safe position with distance
+function MultiGrinder:calculateTeleportPosition(targetPosition, currentPosition, mode)
+    if not self.SafeDistanceEnabled then
+        -- Use legacy offset system
+        local offset = (mode == "Combat") and CONFIG.Combat.TeleportOffset or CONFIG.Mining.TeleportOffset
+        return targetPosition + offset
+    end
+    
+    if mode == "Combat" then
+        -- Calculate direction away from target to maintain safe distance
+        local direction = (currentPosition - targetPosition)
+        direction = Vector3.new(direction.X, 0, direction.Z) -- Keep horizontal only
+        
+        if direction.Magnitude < 0.1 then
+            -- If directly on top, pick random direction
+            direction = Vector3.new(math.random(-100, 100), 0, math.random(-100, 100))
+        end
+        
+        direction = direction.Unit
+        local safePosition = targetPosition + (direction * self.CombatSafeDistance)
+        safePosition = safePosition + Vector3.new(0, 5, 0) -- Keep height offset
+        
+        return safePosition
+    else
+        -- Mining mode: Get very close or inside
+        -- If MiningHitboxMode is enabled, we rotate around the ore slightly each hit
+        local baseDistance = self.MiningSafeDistance
+        local heightOffset = 3
+        
+        if self.MiningHitboxMode then
+            -- Rotate angle slightly each time to hit from different sides (simulates larger hitbox)
+            self.LastMiningAngle = self.LastMiningAngle + 45
+            if self.LastMiningAngle >= 360 then self.LastMiningAngle = 0 end
+            
+            local rad = math.rad(self.LastMiningAngle)
+            local offsetX = math.cos(rad) * baseDistance
+            local offsetZ = math.sin(rad) * baseDistance
+            
+            return targetPosition + Vector3.new(offsetX, heightOffset, offsetZ)
+        else
+            -- Standard close mining
+            local direction = (currentPosition - targetPosition)
+            direction = Vector3.new(direction.X, 0, direction.Z)
+            
+            if direction.Magnitude < 0.1 then
+                direction = Vector3.new(0, 0, 1)
+            else
+                direction = direction.Unit
+            end
+            
+            return targetPosition + (direction * baseDistance) + Vector3.new(0, heightOffset, 0)
+        end
     end
 end
 
@@ -357,8 +472,8 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
         end
     end
 
-    local offset = CONFIG.Combat.TeleportOffset
-    local targetPos = target.Position + offset
+    -- ADDED: Use new distance calculation
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
     
     self.LastKnownPosition = hrp.Position 
     hrp.CFrame = CFrame.new(targetPos)
@@ -368,7 +483,6 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
     
     local equippedTool = char:FindFirstChild(toolName)
     
-    -- FIXED: Use correct equip method
     if not equippedTool then
         if self:equipTool(toolName) then
             equippedTool = char:WaitForChild(toolName, 1.0)
@@ -380,8 +494,8 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        local targetCFrame = CFrame.new(target.Position)
-        Camera.CFrame = CFrame.new(targetCFrame.Position + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.Position)
+        -- Look at target from safe distance
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
         
         self:simulateAction(equippedTool)
     else
@@ -450,7 +564,6 @@ function MultiGrinder:executeCombatAction(hrp)
     
     local equippedTool = char:FindFirstChild(toolName)
     
-    -- FIXED: Use correct equip method
     if not equippedTool then
         if self:equipTool(toolName) then
             equippedTool = char:WaitForChild(toolName, 1.0)
@@ -459,8 +572,8 @@ function MultiGrinder:executeCombatAction(hrp)
     
     if not equippedTool then return false end
     
-    local offset = CONFIG.Combat.TeleportOffset
-    local targetPos = target.Position + offset
+    -- ADDED: Use new distance calculation
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
     
     self.LastKnownPosition = hrp.Position
     hrp.CFrame = CFrame.new(targetPos)
@@ -470,8 +583,8 @@ function MultiGrinder:executeCombatAction(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        local targetCFrame = CFrame.new(target.Position)
-        Camera.CFrame = CFrame.new(targetCFrame.Position + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.Position)
+        -- Face target from safe position
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
 
         self:simulateAction(equippedTool)
     else
@@ -526,8 +639,8 @@ function MultiGrinder:executePriorityAreaMining(hrp)
         end
     end
     
-    local offset = CONFIG.Mining.TeleportOffset
-    local targetPos = target.Position + offset
+    -- ADDED: Use new distance calculation (very close for mining)
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Mining")
     
     self.LastKnownPosition = hrp.Position 
     hrp.CFrame = CFrame.new(targetPos)
@@ -537,7 +650,6 @@ function MultiGrinder:executePriorityAreaMining(hrp)
     
     local equippedTool = char:FindFirstChild(toolName)
     
-    -- FIXED: Use correct equip method
     if not equippedTool then
         if self:equipTool(toolName) then
             equippedTool = char:WaitForChild(toolName, 1.0)
@@ -549,8 +661,7 @@ function MultiGrinder:executePriorityAreaMining(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        local targetCFrame = CFrame.new(target.Position)
-        Camera.CFrame = CFrame.new(targetCFrame.Position + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.Position)
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
 
         self:simulateAction(equippedTool)
     else
@@ -599,7 +710,6 @@ function MultiGrinder:executeMiningAction(hrp)
     
     local equippedTool = char:FindFirstChild(toolName)
     
-    -- FIXED: Use correct equip method
     if not equippedTool then
         if self:equipTool(toolName) then
             equippedTool = char:WaitForChild(toolName, 1.0)
@@ -608,19 +718,18 @@ function MultiGrinder:executeMiningAction(hrp)
     
     if not equippedTool then return false end
     
-    local offset = CONFIG.Mining.TeleportOffset
-    local resourcePos = resource.Position + offset
+    -- ADDED: Use new distance calculation (very close for mining)
+    local targetPos = self:calculateTeleportPosition(resource.Position, hrp.Position, "Mining")
     
     self.LastKnownPosition = hrp.Position
-    hrp.CFrame = CFrame.new(resourcePos)
+    hrp.CFrame = CFrame.new(targetPos)
     
     if Camera and resource and resource.Position then 
         if not self.OriginalCameraCFrame then
             self.OriginalCameraCFrame = Camera.CFrame 
         end
 
-        local resourceCFrame = CFrame.new(resource.Position)
-        Camera.CFrame = CFrame.new(resourceCFrame.Position + (resourceCFrame.LookVector * -5) + Vector3.new(0, 2, 0), resourceCFrame.Position)
+        Camera.CFrame = CFrame.new(targetPos, resource.Position)
         
         self:simulateAction(equippedTool)
     else
@@ -630,7 +739,6 @@ function MultiGrinder:executeMiningAction(hrp)
     return true
 end
 
--- SETTINGS FUNCTIONS (unchanged but included for completeness)
 function MultiGrinder:SaveSettings()
     local settings = {
         CombatToolName = self.CombatToolName,
@@ -646,6 +754,12 @@ function MultiGrinder:SaveSettings()
         AutoIgnoreEnabled = self.AutoIgnoreEnabled,
         TeleportOnRespawnEnabled = self.TeleportOnRespawnEnabled,
         AutoBlockEnabled = self.AutoBlockEnabled,
+        SpecialAttackEnabled = self.SpecialAttackEnabled,
+        -- ADDED: Distance settings
+        SafeDistanceEnabled = self.SafeDistanceEnabled,
+        CombatSafeDistance = self.CombatSafeDistance,
+        MiningSafeDistance = self.MiningSafeDistance,
+        MiningHitboxMode = self.MiningHitboxMode,
         PriorityAreas = {},
         MiningPriorityAreas = {},
         UIPos = {}
@@ -700,6 +814,13 @@ function MultiGrinder:LoadSettings()
     self.AutoIgnoreEnabled = settings.AutoIgnoreEnabled ~= false
     self.TeleportOnRespawnEnabled = settings.TeleportOnRespawnEnabled ~= false
     self.AutoBlockEnabled = settings.AutoBlockEnabled == true
+    self.SpecialAttackEnabled = settings.SpecialAttackEnabled == true
+    
+    -- ADDED: Load distance settings
+    self.SafeDistanceEnabled = settings.SafeDistanceEnabled == true
+    self.CombatSafeDistance = settings.CombatSafeDistance or 10
+    self.MiningSafeDistance = settings.MiningSafeDistance or 1
+    self.MiningHitboxMode = settings.MiningHitboxMode == true
 
     if settings.PriorityAreas then
         self.PriorityAreas = {}
@@ -741,6 +862,13 @@ function MultiGrinder:ResetSettings()
     self.AutoIgnoreEnabled = true
     self.TeleportOnRespawnEnabled = true
     self.AutoBlockEnabled = false
+    self.SpecialAttackEnabled = false
+    
+    -- ADDED: Reset distance settings
+    self.SafeDistanceEnabled = false
+    self.CombatSafeDistance = 10
+    self.MiningSafeDistance = 1
+    self.MiningHitboxMode = false
     
     self.PriorityAreas = {}
     self.MiningPriorityAreas = {}
@@ -763,11 +891,18 @@ function MultiGrinder:ResetSettings()
         self.MainGui.MiningPage.MiningPriorityRadiusInput.Text = self.MiningPriorityAreaScanRadius
         self.MainGui.MiningPage.MiningPriorityScanTimeInput.Text = self.MiningPriorityAreaScanTime
         
+        -- ADDED: Reset distance UI
+        self.MainGui.GeneralPage.SafeDistanceToggle.Text = "Safe Distance: OFF"
+        self.MainGui.GeneralPage.SafeDistanceToggle.BackgroundColor3 = CONFIG.ToggleOffColor
+        self.MainGui.GeneralPage.CombatDistanceInput.Text = tostring(self.CombatSafeDistance)
+        self.MainGui.GeneralPage.MiningDistanceInput.Text = tostring(self.MiningSafeDistance)
+        self.MainGui.GeneralPage.MiningHitboxToggle.Text = "Mining Hitbox+: OFF"
+        self.MainGui.GeneralPage.MiningHitboxToggle.BackgroundColor3 = CONFIG.ToggleOffColor
+        
         self:updateGUI()
     end
 end
 
--- GUI FUNCTIONS
 function MultiGrinder:setMinimizedState(isMinimized)
     self.IsMinimized = isMinimized
     
@@ -796,7 +931,6 @@ function MultiGrinder:updateGUI()
     local combatPage = self.MainGui.CombatPage
     local miningPage = self.MainGui.MiningPage
     
-    -- Toggle Button
     if self.Enabled then
         generalPage.ToggleButton.Text = "ON"
         generalPage.ToggleButton.BackgroundColor3 = CONFIG.ToggleOnColor
@@ -807,7 +941,6 @@ function MultiGrinder:updateGUI()
         generalPage.IgnoreButton.Visible = false
     end
     
-    -- Ignore Button
     if self.Enabled then
         if self.CurrentTargetIdentifier then
             generalPage.IgnoreButton.Text = string.format("IGNORE: %s", self.CurrentTargetIdentifier.Name)
@@ -818,7 +951,6 @@ function MultiGrinder:updateGUI()
         end
     end
 
-    -- Other toggles
     generalPage.AutoIgnoreButton.Text = self.AutoIgnoreEnabled and "10s Auto-Ignore: ON" or "10s Auto-Ignore: OFF"
     generalPage.AutoIgnoreButton.BackgroundColor3 = self.AutoIgnoreEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
 
@@ -827,22 +959,29 @@ function MultiGrinder:updateGUI()
 
     generalPage.AutoBlockButton.Text = self.AutoBlockEnabled and "Auto-Block: ON" or "Auto-Block: OFF"
     generalPage.AutoBlockButton.BackgroundColor3 = self.AutoBlockEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    
+    generalPage.SpecialAttackButton.Text = self.SpecialAttackEnabled and "SPECIAL ATTACK: ON" or "SPECIAL ATTACK: OFF"
+    generalPage.SpecialAttackButton.BackgroundColor3 = self.SpecialAttackEnabled and CONFIG.SpecialAttackColor or CONFIG.ToggleOffColor
+    
+    -- ADDED: Distance UI updates
+    generalPage.SafeDistanceToggle.Text = self.SafeDistanceEnabled and "Safe Distance: ON" or "Safe Distance: OFF"
+    generalPage.SafeDistanceToggle.BackgroundColor3 = self.SafeDistanceEnabled and CONFIG.DistanceColor or CONFIG.ToggleOffColor
+    
+    generalPage.MiningHitboxToggle.Text = self.MiningHitboxMode and "Mining Hitbox+: ON" or "Mining Hitbox+: OFF"
+    generalPage.MiningHitboxToggle.BackgroundColor3 = self.MiningHitboxMode and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
 
     local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
     local modeDisplayName = (self.Mode == "Combat") and "Attacking" or "Mining"
     generalPage.ModeButton.Text = modeDisplayName .. " ("..currentToolName..")"
     
-    -- Combat Page
     combatPage.PriorityAreaToggleButton.Text = self.PriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
     combatPage.PriorityAreaToggleButton.BackgroundColor3 = self.PriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
-    combatPage.PriorityAreaCountLabel.Text = string.format("Areas: %d/20", #self.PriorityAreas)
+    combatPage.PriorityAreaCountLabel.Text = string.format("Areas: %d", #self.PriorityAreas)
 
-    -- Mining Page
     miningPage.MiningPriorityAreaToggleButton.Text = self.MiningPriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
     miningPage.MiningPriorityAreaToggleButton.BackgroundColor3 = self.MiningPriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
-    miningPage.MiningPriorityAreaCountLabel.Text = string.format("Areas: %d/20", #self.MiningPriorityAreas)
+    miningPage.MiningPriorityAreaCountLabel.Text = string.format("Areas: %d", #self.MiningPriorityAreas)
 
-    -- Tabs
     for tabName, tabButton in pairs(self.MainGui.Tabs) do
         if tabName == self.CurrentTab then
             tabButton.BackgroundColor3 = CONFIG.BackgroundColor 
@@ -1013,7 +1152,6 @@ function MultiGrinder:setupGUI()
         CloseButton.BackgroundColor3 = CONFIG.CloseButtonBaseColor
     end)
     
-    -- FIXED: Proper dragging implementation
     local dragging = false
     local dragInput = nil
     local dragStart = nil
@@ -1113,6 +1251,12 @@ function MultiGrinder:setupGUI()
         self.MiningPriorityAreaScanTimer = 0
         self.CurrentMiningPriorityAreaIndex = 1
         
+        if not self.Enabled and self.SpecialAttackEnabled then
+            self:StopSpecialAttack()
+        elseif self.Enabled and self.SpecialAttackEnabled then
+            self:StartSpecialAttack()
+        end
+        
         if not self.Enabled then
             restoreCamera(self) 
         else
@@ -1178,6 +1322,58 @@ function MultiGrinder:setupGUI()
         self.AutoBlockEnabled = not self.AutoBlockEnabled
         self:updateGUI()
     end)
+
+    local SpecialAttackButton = createButton(GeneralPage, "SPECIAL ATTACK: OFF", CONFIG.ToggleOffColor)
+    SpecialAttackButton.MouseButton1Click:Connect(function()
+        self.SpecialAttackEnabled = not self.SpecialAttackEnabled
+        
+        if self.SpecialAttackEnabled and self.Enabled then
+            self:StartSpecialAttack()
+        else
+            self:StopSpecialAttack()
+        end
+        
+        self:updateGUI()
+    end)
+
+    -- ADDED: Safe Distance Toggle (Blue)
+    local SafeDistanceToggle = createButton(GeneralPage, "Safe Distance: OFF", CONFIG.ToggleOffColor)
+    SafeDistanceToggle.MouseButton1Click:Connect(function()
+        self.SafeDistanceEnabled = not self.SafeDistanceEnabled
+        self:updateGUI()
+    end)
+    
+    -- ADDED: Combat Distance Input
+    createInputLabel(GeneralPage, "Combat Safe Distance (studs):")
+    local CombatDistanceInput = createTextBox(GeneralPage, tostring(self.CombatSafeDistance), "E.g., 10 (safe range)")
+    CombatDistanceInput.FocusLost:Connect(function()
+        local dist = tonumber(CombatDistanceInput.Text)
+        if dist and dist >= 0 then
+            self.CombatSafeDistance = dist
+        else
+            CombatDistanceInput.Text = tostring(self.CombatSafeDistance)
+        end
+    end)
+    
+    -- ADDED: Mining Distance Input
+    createInputLabel(GeneralPage, "Mining Distance (studs):")
+    local MiningDistanceInput = createTextBox(GeneralPage, tostring(self.MiningSafeDistance), "E.g., 1 (very close)")
+    MiningDistanceInput.FocusLost:Connect(function()
+        local dist = tonumber(MiningDistanceInput.Text)
+        if dist and dist >= 0 then
+            self.MiningSafeDistance = dist
+        else
+            MiningDistanceInput.Text = tostring(self.MiningSafeDistance)
+        end
+    end)
+    
+    -- ADDED: Mining Hitbox+ Toggle (Rotates position to hit from multiple angles)
+    local MiningHitboxToggle = createButton(GeneralPage, "Mining Hitbox+: OFF", CONFIG.ToggleOffColor)
+    MiningHitboxToggle.MouseButton1Click:Connect(function()
+        self.MiningHitboxMode = not self.MiningHitboxMode
+        self:updateGUI()
+    end)
+    -- Tooltip info: This rotates your position around the ore to hit it from multiple sides rapidly
 
     local SaveSettingsButton = createButton(GeneralPage, "Save Settings", CONFIG.AccentColor)
     SaveSettingsButton.MouseButton1Click:Connect(function()
@@ -1250,12 +1446,10 @@ function MultiGrinder:setupGUI()
     
     local AddPriorityAreaButton = createButton(CombatPage, "Add Current Position as Area", CONFIG.AccentColor, 25)
     AddPriorityAreaButton.MouseButton1Click:Connect(function()
-        if #self.PriorityAreas < 20 then
-            local hrp = self:getHumanoidRootPart()
-            if hrp then
-                table.insert(self.PriorityAreas, hrp.CFrame)
-                self:updateGUI()
-            end
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            table.insert(self.PriorityAreas, hrp.CFrame)
+            self:updateGUI()
         end
     end)
     
@@ -1273,7 +1467,7 @@ function MultiGrinder:setupGUI()
     local PriorityAreaCountLabel = Instance.new("TextLabel")
     PriorityAreaCountLabel.Name = "PriorityAreaCountLabel"
     PriorityAreaCountLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    PriorityAreaCountLabel.Text = "Areas: 0/20"
+    PriorityAreaCountLabel.Text = "Areas: 0"
     PriorityAreaCountLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
     PriorityAreaCountLabel.Font = Enum.Font.Gotham
     PriorityAreaCountLabel.TextSize = 14
@@ -1342,12 +1536,10 @@ function MultiGrinder:setupGUI()
     
     local MiningAddPriorityAreaButton = createButton(MiningPage, "Add Current Position as Area", CONFIG.AccentColor, 25)
     MiningAddPriorityAreaButton.MouseButton1Click:Connect(function()
-        if #self.MiningPriorityAreas < 20 then
-            local hrp = self:getHumanoidRootPart()
-            if hrp then
-                table.insert(self.MiningPriorityAreas, hrp.CFrame)
-                self:updateGUI()
-            end
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            table.insert(self.MiningPriorityAreas, hrp.CFrame)
+            self:updateGUI()
         end
     end)
     
@@ -1365,7 +1557,7 @@ function MultiGrinder:setupGUI()
     local MiningPriorityAreaCountLabel = Instance.new("TextLabel")
     MiningPriorityAreaCountLabel.Name = "MiningPriorityAreaCountLabel"
     MiningPriorityAreaCountLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    MiningPriorityAreaCountLabel.Text = "Areas: 0/20"
+    MiningPriorityAreaCountLabel.Text = "Areas: 0"
     MiningPriorityAreaCountLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
     MiningPriorityAreaCountLabel.Font = Enum.Font.Gotham
     MiningPriorityAreaCountLabel.TextSize = 14
@@ -1390,6 +1582,12 @@ function MultiGrinder:setupGUI()
             AutoIgnoreButton = AutoIgnoreButton,
             TeleportOnRespawnButton = TeleportOnRespawnButton,
             AutoBlockButton = AutoBlockButton,
+            SpecialAttackButton = SpecialAttackButton,
+            -- ADDED: Distance controls
+            SafeDistanceToggle = SafeDistanceToggle,
+            CombatDistanceInput = CombatDistanceInput,
+            MiningDistanceInput = MiningDistanceInput,
+            MiningHitboxToggle = MiningHitboxToggle,
             SaveSettingsButton = SaveSettingsButton,
             ResetSettingsButton = ResetSettingsButton
         },
@@ -1415,7 +1613,6 @@ function MultiGrinder:setupGUI()
         }
     }
 
-    -- FIXED: Minimize button functionality
     MinimizeButton.MouseButton1Click:Connect(function()
         self:setMinimizedState(not self.IsMinimized)
         MinimizeButton.Text = self.IsMinimized and "+" or "-"
@@ -1425,6 +1622,7 @@ function MultiGrinder:setupGUI()
         if self.LoopThread then 
             task.cancel(self.LoopThread) 
         end
+        self:StopSpecialAttack()
         restoreCamera(self)
         ScreenGui:Destroy()
     end)
@@ -1440,7 +1638,6 @@ function MultiGrinder:start()
     
     self.LoopThread = task.spawn(function()
         while task.wait(CONFIG.FarmSpeed) do
-            -- FIXED: Auto-Block using correct method
             if self.AutoBlockEnabled and self.Remotes.Block then
                 pcall(function()
                     self.Remotes.Block:FireServer(true)
