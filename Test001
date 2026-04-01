@@ -16,7 +16,7 @@ local CONFIG = {
     ScriptName = "Studlands (Special Attack Edition)",
     DefaultMode = "Combat", 
     FarmSpeed = 0.25,
-    SpecialAttackCooldown = 0.15, -- Anti-lag: 0.15s between special attacks
+    SpecialAttackCooldown = 0.1, -- Anti-lag: 0.15s between special attacks
     
     FrameWidth = 260, 
     TitleBarHeight = 35, 
