@@ -16,7 +16,7 @@ local CONFIG = {
     ScriptName = "Studlands (Safe Distance Edition)",
     DefaultMode = "Combat", 
     FarmSpeed = 0.25,
-    SpecialAttackCooldown = 0.15,
+    SpecialAttackCooldown = 0.1,
     
     FrameWidth = 260, 
     TitleBarHeight = 35, 
