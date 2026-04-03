@@ -6,7 +6,6 @@ local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
-local RunService = game:GetService("RunService")
 local Camera = Workspace.CurrentCamera
 
 local MultiGrinder = {}
@@ -14,15 +13,15 @@ MultiGrinder.__index = MultiGrinder
 
 -- CONFIGURATION
 local CONFIG = {
-    ScriptName = "Studlands (Fly/Circle Edition)",
+    ScriptName = "Studlands (Safe Distance Edition)",
     DefaultMode = "Combat", 
-    FarmSpeed = 0.08, -- Faster for smoother flying
-    SpecialAttackCooldown = 0.15,
+    FarmSpeed = 0.25,
+    SpecialAttackCooldown = 0.01,
     
     FrameWidth = 260, 
     TitleBarHeight = 35, 
     TabBarHeight = 30, 
-    ContentAreaHeight = 300, -- Increased for new UI
+    ContentAreaHeight = 260,
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
@@ -36,8 +35,6 @@ local CONFIG = {
     ToggleOffColor = Color3.fromRGB(180, 0, 0), 
     SpecialAttackColor = Color3.fromRGB(255, 100, 0),
     DistanceColor = Color3.fromRGB(100, 100, 255),
-    FlyColor = Color3.fromRGB(255, 255, 0), -- Yellow for fly
-    CircleColor = Color3.fromRGB(0, 255, 255), -- Cyan for circle
     InputBackgroundColor = Color3.fromRGB(50, 50, 60),
 
     CloseButtonBaseColor = Color3.fromRGB(200, 0, 0), 
@@ -98,7 +95,8 @@ function MultiGrinder:new()
         MiningTargetNames = table.concat(CONFIG.Mining.TargetNames, ", "),
         
         OriginalCameraCFrame = nil, 
-        IgnoredTargets = {}, -- FIXED: Removed __mode to prevent GC of ignored targets
+        -- FIX: Removed weak table metatable so ignores actually persist
+        IgnoredTargets = {},
         TargetAcquiredTime = nil, 
         AutoIgnoreEnabled = true, 
         
@@ -113,16 +111,6 @@ function MultiGrinder:new()
         CombatSafeDistance = 10,
         MiningSafeDistance = 1,
         MiningHitboxMode = false,
-        
-        -- ADDED: Fly and Circle systems
-        FlyEnabled = true, -- Default ON
-        FlyHeight = 15, -- Height above target
-        NoclipEnabled = true, -- Default ON
-        CircleEnabled = false,
-        CircleRadius = 8,
-        CircleSpeed = 2, -- Degrees per frame
-        CurrentCircleAngle = 0,
-        NoclipConnection = nil,
 
         PriorityAreas = {}, 
         PriorityAreaEnabled = false,
@@ -145,9 +133,9 @@ function MultiGrinder:new()
         
         TargetCache = {},
         LastSearchTime = 0,
-        SearchCooldown = 0.15, -- Faster for fly mode
+        SearchCooldown = 0.3,
         LastAttackTime = 0,
-        AttackCooldown = 0.05, -- Faster attacks with fly
+        AttackCooldown = 0.1,
         LastMiningAngle = 0,
         
     }, MultiGrinder)
@@ -155,7 +143,6 @@ function MultiGrinder:new()
     self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
     self:LoadSettings()
     self:SetupAntiAfk()
-    self:SetupNoclip() -- ADDED
 
     LocalPlayer.CharacterAdded:Connect(function(character)
         task.wait(0.5)
@@ -173,11 +160,6 @@ function MultiGrinder:new()
         self.PriorityAreaTarget = nil 
         self.MiningPriorityAreaTarget = nil
         
-        -- Re-enable noclip on respawn
-        if self.NoclipEnabled then
-            self:SetupNoclip()
-        end
-        
         local playerGui = LocalPlayer:WaitForChild("PlayerGui")
         if not playerGui:FindFirstChild("MultiBotGui") then
             self:setupGUI()
@@ -193,26 +175,6 @@ function MultiGrinder:SetupAntiAfk()
         VirtualUser:Button2Down(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
         task.wait(1)
         VirtualUser:Button2Up(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
-    end)
-end
-
--- ADDED: Noclip system
-function MultiGrinder:SetupNoclip()
-    if self.NoclipConnection then
-        self.NoclipConnection:Disconnect()
-    end
-    
-    self.NoclipConnection = RunService.Stepped:Connect(function()
-        if not self.NoclipEnabled then return end
-        
-        local char = LocalPlayer.Character
-        if not char then return end
-        
-        for _, part in pairs(char:GetDescendants()) do
-            if part:IsA("BasePart") and part.CanCollide then
-                part.CanCollide = false
-            end
-        end
     end)
 end
 
@@ -268,34 +230,7 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
--- FIXED: Better ignore system with name-based storage
-function MultiGrinder:isIgnored(targetKey)
-    if not targetKey then return false end
-    
-    -- Check by object reference
-    if self.IgnoredTargets[targetKey] then
-        return true
-    end
-    
-    -- Check by name (in case object was destroyed and recreated)
-    local targetName = targetKey.Name
-    if targetName and self.IgnoredTargets["name_" .. targetName] then
-        return true
-    end
-    
-    return false
-end
-
-function MultiGrinder:ignoreTarget(targetKey)
-    if not targetKey then return end
-    
-    -- Store both reference and name
-    self.IgnoredTargets[targetKey] = true
-    self.IgnoredTargets["name_" .. targetKey.Name] = true
-    
-    print("[Multi-Bot] Ignored: " .. targetKey.Name)
-end
-
+-- FIX: Changed to GetDescendants and added dead mob filtering
 function MultiGrinder:findClosestTarget(position, names)
     local currentTime = tick()
     if currentTime - self.LastSearchTime < self.SearchCooldown and self.TargetCache.LastPosition then
@@ -309,16 +244,24 @@ function MultiGrinder:findClosestTarget(position, names)
     local closestTargetKey = nil 
     local minDistance = math.huge
     
-    local children = Workspace:GetChildren()
-    for _, obj in ipairs(children) do
+    -- FIX: Now searches all descendants instead of just direct children
+    local descendants = Workspace:GetDescendants()
+    for _, obj in ipairs(descendants) do
         for _, name in ipairs(names) do
             if string.find(string.lower(obj.Name), string.lower(name)) then
                 local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
                 if targetPart and targetPart.Parent ~= LocalPlayer.Character then
-                    local targetKey = targetPart.Parent:FindFirstChildOfClass("Humanoid") and targetPart.Parent or targetPart
+                    local parent = targetPart.Parent
+                    local humanoid = parent:FindFirstChildOfClass("Humanoid")
                     
-                    -- FIXED: Use new ignore check
-                    if not self:isIgnored(targetKey) then
+                    -- FIX: Skip mobs that are dead or have no HP
+                    if humanoid and humanoid.Health <= 0 then
+                        continue
+                    end
+                    
+                    local targetKey = humanoid and parent or targetPart
+                    
+                    if not self.IgnoredTargets[targetKey] then
                         local dist = (targetPart.Position - position).Magnitude
                         if dist < minDistance then
                             minDistance = dist
@@ -347,13 +290,12 @@ function MultiGrinder:findClosestMobInArea(position, radius)
     local minDistance = math.huge
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Humanoid") and obj.Health > 0 then
+        if obj:IsA("Humanoid") and obj.Health > 0 then  -- Already checks health > 0
             local parentModel = obj.Parent
             if parentModel and parentModel ~= LocalPlayer.Character then
                 local hrp = parentModel:FindFirstChild("HumanoidRootPart")
                 if hrp then
-                    -- FIXED: Use new ignore check
-                    if not self:isIgnored(parentModel) then
+                    if not self.IgnoredTargets[parentModel] then
                         local dist = (hrp.Position - position).Magnitude
                         if dist <= radius and dist < minDistance then
                             minDistance = dist
@@ -381,7 +323,7 @@ function MultiGrinder:findClosestResourceInArea(position, radius, names)
                 if targetPart and targetPart.Parent ~= LocalPlayer.Character then
                     local parentModel = targetPart.Parent
                     if not parentModel:FindFirstChildOfClass("Humanoid") then
-                        if not self:isIgnored(targetPart) then
+                        if not self.IgnoredTargets[targetPart] then
                             local dist = (targetPart.Position - position).Magnitude
                             if dist <= radius and dist < minDistance then
                                 minDistance = dist
@@ -439,50 +381,49 @@ local function restoreCamera(self)
     end
 end
 
--- ADDED: Calculate fly position with circle and height
-function MultiGrinder:calculateFlyPosition(targetPosition, currentPosition, mode)
-    local baseHeight = targetPosition.Y + self.FlyHeight
+function MultiGrinder:calculateTeleportPosition(targetPosition, currentPosition, mode)
+    if not self.SafeDistanceEnabled then
+        local offset = (mode == "Combat") and CONFIG.Combat.TeleportOffset or CONFIG.Mining.TeleportOffset
+        return targetPosition + offset
+    end
     
-    if mode == "Combat" and self.CircleEnabled then
-        -- Circle around the target
-        self.CurrentCircleAngle = self.CurrentCircleAngle + self.CircleSpeed
-        if self.CurrentCircleAngle >= 360 then
-            self.CurrentCircleAngle = 0
-        end
-        
-        local rad = math.rad(self.CurrentCircleAngle)
-        local offsetX = math.cos(rad) * self.CircleRadius
-        local offsetZ = math.sin(rad) * self.CircleRadius
-        
-        return Vector3.new(
-            targetPosition.X + offsetX,
-            baseHeight,
-            targetPosition.Z + offsetZ
-        )
-    else
-        -- Standard fly position - stay above and look down
+    if mode == "Combat" then
         local direction = (currentPosition - targetPosition)
         direction = Vector3.new(direction.X, 0, direction.Z)
         
         if direction.Magnitude < 0.1 then
-            direction = Vector3.new(0, 0, 1)
-        else
-            direction = direction.Unit
+            direction = Vector3.new(math.random(-100, 100), 0, math.random(-100, 100))
         end
         
-        -- For mining, get closer. For combat, maintain distance
-        local horizontalDistance = (mode == "Combat") and self.CombatSafeDistance or self.MiningSafeDistance
+        direction = direction.Unit
+        local safePosition = targetPosition + (direction * self.CombatSafeDistance)
+        safePosition = safePosition + Vector3.new(0, 5, 0)
         
-        if self.SafeDistanceEnabled then
-            return Vector3.new(
-                targetPosition.X + (direction.X * horizontalDistance),
-                baseHeight,
-                targetPosition.Z + (direction.Z * horizontalDistance)
-            )
+        return safePosition
+    else
+        local baseDistance = self.MiningSafeDistance
+        local heightOffset = 3
+        
+        if self.MiningHitboxMode then
+            self.LastMiningAngle = self.LastMiningAngle + 45
+            if self.LastMiningAngle >= 360 then self.LastMiningAngle = 0 end
+            
+            local rad = math.rad(self.LastMiningAngle)
+            local offsetX = math.cos(rad) * baseDistance
+            local offsetZ = math.sin(rad) * baseDistance
+            
+            return targetPosition + Vector3.new(offsetX, heightOffset, offsetZ)
         else
-            -- Just fly above with legacy offset
-            return targetPosition + Vector3.new(0, self.FlyHeight, 0) + 
-                   ((mode == "Combat") and CONFIG.Combat.TeleportOffset or CONFIG.Mining.TeleportOffset)
+            local direction = (currentPosition - targetPosition)
+            direction = Vector3.new(direction.X, 0, direction.Z)
+            
+            if direction.Magnitude < 0.1 then
+                direction = Vector3.new(0, 0, 1)
+            else
+                direction = direction.Unit
+            end
+            
+            return targetPosition + (direction * baseDistance) + Vector3.new(0, heightOffset, 0)
         end
     end
 end
@@ -513,6 +454,7 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
             self.CurrentTargetIdentifier = newTargetKey 
             target = self.PriorityAreaTarget
             self.PriorityAreaScanTimer = 0 
+            self.TargetAcquiredTime = tick()  -- FIX: Reset timer when getting new target
             self:updateGUI()
         else
             self.PriorityAreaScanTimer = self.PriorityAreaScanTimer + CONFIG.FarmSpeed
@@ -531,14 +473,10 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
         end
     end
 
-    -- ADDED: Use fly position calculation
-    local targetPos = self:calculateFlyPosition(target.Position, hrp.Position, "Combat")
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
     
     self.LastKnownPosition = hrp.Position 
     hrp.CFrame = CFrame.new(targetPos)
-    
-    -- Rotate to face target while flying
-    hrp.CFrame = CFrame.lookAt(targetPos, target.Position)
     
     local char = LocalPlayer.Character
     if not char then return false end
@@ -556,8 +494,7 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        -- Camera looks down at target from above
-        Camera.CFrame = CFrame.lookAt(targetPos + Vector3.new(0, 5, 0), target.Position)
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
         
         self:simulateAction(equippedTool)
     else
@@ -603,25 +540,26 @@ function MultiGrinder:executeCombatAction(hrp)
         self:updateGUI() 
     end
     
-    if self.AutoIgnoreEnabled and target and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
+    -- FIX: Improved auto-ignore logic - checks if target has been the same for 10+ seconds
+    if self.AutoIgnoreEnabled and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
         local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
-        if humanoid and humanoid.Health > 0 then
+        -- Only ignore if still alive (stuck mob), if dead let normal logic handle it
+        if humanoid and humanoid.Health > 0 and humanoid.Health == humanoid.MaxHealth then
+            -- Mob is at full health after 10 seconds = stuck/invincible
             if self.CurrentTargetIdentifier then
-                self:ignoreTarget(self.CurrentTargetIdentifier)
+                self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+                print("[Multi-Bot] Auto-ignored stuck mob:", self.CurrentTargetIdentifier.Name)
             end
             
-            -- FIXED: Fully clear target
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil 
             self.TargetAcquiredTime = nil
-            self.TargetCache = {} -- Clear cache
-            
             restoreCamera(self)
             self:updateGUI()
             return false 
-        else
-            self.TargetAcquiredTime = nil
         end
+        -- Reset timer to check again later if taking damage but not dead yet
+        self.TargetAcquiredTime = tick() - 5  -- Give it 5 more seconds
     end
     
     local char = LocalPlayer.Character
@@ -637,19 +575,17 @@ function MultiGrinder:executeCombatAction(hrp)
     
     if not equippedTool then return false end
     
-    -- ADDED: Use fly position
-    local targetPos = self:calculateFlyPosition(target.Position, hrp.Position, "Combat")
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
     
     self.LastKnownPosition = hrp.Position
-    hrp.CFrame = CFrame.lookAt(targetPos, target.Position) -- Face target while flying
+    hrp.CFrame = CFrame.new(targetPos)
     
     if Camera and target and target.Position then 
         if not self.OriginalCameraCFrame then
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        -- Camera from above looking down
-        Camera.CFrame = CFrame.lookAt(targetPos + Vector3.new(0, 5, 0), target.Position)
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
 
         self:simulateAction(equippedTool)
     else
@@ -677,6 +613,7 @@ function MultiGrinder:executePriorityAreaMining(hrp)
     if not targetIsValid then
         self.MiningPriorityAreaTarget = nil
         self.CurrentTargetIdentifier = nil 
+        self.LastMiningAngle = 0  -- FIX: Reset angle when target invalid
         
         local targetNames = self:getTargetNames("Mining")
         local newTarget, newTargetKey = self:findClosestResourceInArea(hrp.Position, self.MiningPriorityAreaScanRadius, targetNames)
@@ -704,11 +641,17 @@ function MultiGrinder:executePriorityAreaMining(hrp)
         end
     end
     
-    -- ADDED: Fly above ore
-    local targetPos = self:calculateFlyPosition(target.Position, hrp.Position, "Mining")
+    -- FIX: Check if target still exists before calculating position (prevents rotating around mined ore)
+    if not target or not target.Parent then
+        self.MiningPriorityAreaTarget = nil
+        self.LastMiningAngle = 0
+        return false
+    end
+    
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Mining")
     
     self.LastKnownPosition = hrp.Position 
-    hrp.CFrame = CFrame.lookAt(targetPos, target.Position)
+    hrp.CFrame = CFrame.new(targetPos)
     
     local char = LocalPlayer.Character
     if not char then return false end
@@ -726,9 +669,14 @@ function MultiGrinder:executePriorityAreaMining(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        Camera.CFrame = CFrame.lookAt(targetPos + Vector3.new(0, 5, 0), target.Position)
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
 
         self:simulateAction(equippedTool)
+        
+        -- FIX: Check if ore was destroyed by this hit, if so reset angle for next target
+        if not target.Parent then
+            self.LastMiningAngle = 0
+        end
     else
         restoreCamera(self) 
     end
@@ -753,12 +701,18 @@ function MultiGrinder:executeMiningAction(hrp)
     local needsNewTarget = not resource or not resource.Parent
 
     if needsNewTarget then
+        -- FIX: Reset angle when getting new target
+        if self.CurrentTarget then
+            self.LastMiningAngle = 0
+        end
+        
         local targetNames = self:getTargetNames("Mining")
         local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newResource then 
             self.CurrentTarget = nil
             self.CurrentTargetIdentifier = nil 
+            self.LastMiningAngle = 0
             restoreCamera(self) 
             self:updateGUI() 
             return false 
@@ -767,7 +721,15 @@ function MultiGrinder:executeMiningAction(hrp)
         self.CurrentTarget = newResource
         self.CurrentTargetIdentifier = newResourceKey 
         resource = self.CurrentTarget
+        self.LastMiningAngle = 0  -- FIX: Reset for new resource
         self:updateGUI() 
+    end
+    
+    -- FIX: Double check resource still exists
+    if not resource or not resource.Parent then
+        self.CurrentTarget = nil
+        self.LastMiningAngle = 0
+        return false
     end
     
     local char = LocalPlayer.Character
@@ -783,20 +745,24 @@ function MultiGrinder:executeMiningAction(hrp)
     
     if not equippedTool then return false end
     
-    -- ADDED: Fly above ore
-    local targetPos = self:calculateFlyPosition(resource.Position, hrp.Position, "Mining")
+    local targetPos = self:calculateTeleportPosition(resource.Position, hrp.Position, "Mining")
     
     self.LastKnownPosition = hrp.Position
-    hrp.CFrame = CFrame.lookAt(targetPos, resource.Position)
+    hrp.CFrame = CFrame.new(targetPos)
     
     if Camera and resource and resource.Position then 
         if not self.OriginalCameraCFrame then
             self.OriginalCameraCFrame = Camera.CFrame 
         end
 
-        Camera.CFrame = CFrame.lookAt(targetPos + Vector3.new(0, 5, 0), resource.Position)
+        Camera.CFrame = CFrame.new(targetPos, resource.Position)
         
         self:simulateAction(equippedTool)
+        
+        -- FIX: If ore was destroyed, reset angle immediately
+        if not resource.Parent then
+            self.LastMiningAngle = 0
+        end
     else
         restoreCamera(self) 
     end
@@ -824,13 +790,6 @@ function MultiGrinder:SaveSettings()
         CombatSafeDistance = self.CombatSafeDistance,
         MiningSafeDistance = self.MiningSafeDistance,
         MiningHitboxMode = self.MiningHitboxMode,
-        -- ADDED: Fly settings
-        FlyEnabled = self.FlyEnabled,
-        FlyHeight = self.FlyHeight,
-        NoclipEnabled = self.NoclipEnabled,
-        CircleEnabled = self.CircleEnabled,
-        CircleRadius = self.CircleRadius,
-        CircleSpeed = self.CircleSpeed,
         PriorityAreas = {},
         MiningPriorityAreas = {},
         UIPos = {}
@@ -891,14 +850,6 @@ function MultiGrinder:LoadSettings()
     self.CombatSafeDistance = settings.CombatSafeDistance or 10
     self.MiningSafeDistance = settings.MiningSafeDistance or 1
     self.MiningHitboxMode = settings.MiningHitboxMode == true
-    
-    -- ADDED: Load fly settings
-    self.FlyEnabled = settings.FlyEnabled ~= false -- Default true
-    self.FlyHeight = settings.FlyHeight or 15
-    self.NoclipEnabled = settings.NoclipEnabled ~= false -- Default true
-    self.CircleEnabled = settings.CircleEnabled == true
-    self.CircleRadius = settings.CircleRadius or 8
-    self.CircleSpeed = settings.CircleSpeed or 2
 
     if settings.PriorityAreas then
         self.PriorityAreas = {}
@@ -947,17 +898,11 @@ function MultiGrinder:ResetSettings()
     self.MiningSafeDistance = 1
     self.MiningHitboxMode = false
     
-    -- ADDED: Reset fly settings
-    self.FlyEnabled = true
-    self.FlyHeight = 15
-    self.NoclipEnabled = true
-    self.CircleEnabled = false
-    self.CircleRadius = 8
-    self.CircleSpeed = 2
-    
     self.PriorityAreas = {}
     self.MiningPriorityAreas = {}
-    self.IgnoredTargets = {} -- FIXED: Clear ignore list too
+    
+    -- FIX: Reset to regular empty table
+    self.IgnoredTargets = {}
     
     self.UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2))
     if self.MainGui and self.MainGui.MainFrame then
@@ -983,16 +928,6 @@ function MultiGrinder:ResetSettings()
         self.MainGui.GeneralPage.MiningDistanceInput.Text = tostring(self.MiningSafeDistance)
         self.MainGui.GeneralPage.MiningHitboxToggle.Text = "Mining Hitbox+: OFF"
         self.MainGui.GeneralPage.MiningHitboxToggle.BackgroundColor3 = CONFIG.ToggleOffColor
-        
-        -- ADDED: Reset fly UI
-        self.MainGui.GeneralPage.FlyToggle.Text = "Fly Mode: ON"
-        self.MainGui.GeneralPage.FlyToggle.BackgroundColor3 = CONFIG.FlyColor
-        self.MainGui.GeneralPage.NoclipToggle.Text = "Noclip: ON"
-        self.MainGui.GeneralPage.NoclipToggle.BackgroundColor3 = CONFIG.ToggleOnColor
-        self.MainGui.GeneralPage.CircleToggle.Text = "Circle/Dodge: OFF"
-        self.MainGui.GeneralPage.CircleToggle.BackgroundColor3 = CONFIG.ToggleOffColor
-        self.MainGui.GeneralPage.FlyHeightInput.Text = tostring(self.FlyHeight)
-        self.MainGui.GeneralPage.CircleRadiusInput.Text = tostring(self.CircleRadius)
         
         self:updateGUI()
     end
@@ -1063,16 +998,6 @@ function MultiGrinder:updateGUI()
     
     generalPage.MiningHitboxToggle.Text = self.MiningHitboxMode and "Mining Hitbox+: ON" or "Mining Hitbox+: OFF"
     generalPage.MiningHitboxToggle.BackgroundColor3 = self.MiningHitboxMode and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
-    
-    -- ADDED: Fly UI updates
-    generalPage.FlyToggle.Text = self.FlyEnabled and "Fly Mode: ON" or "Fly Mode: OFF"
-    generalPage.FlyToggle.BackgroundColor3 = self.FlyEnabled and CONFIG.FlyColor or CONFIG.ToggleOffColor
-    
-    generalPage.NoclipToggle.Text = self.NoclipEnabled and "Noclip: ON" or "Noclip: OFF"
-    generalPage.NoclipToggle.BackgroundColor3 = self.NoclipEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
-    
-    generalPage.CircleToggle.Text = self.CircleEnabled and "Circle/Dodge: ON" or "Circle/Dodge: OFF"
-    generalPage.CircleToggle.BackgroundColor3 = self.CircleEnabled and CONFIG.CircleColor or CONFIG.ToggleOffColor
 
     local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
     local modeDisplayName = (self.Mode == "Combat") and "Attacking" or "Mining"
@@ -1354,7 +1279,7 @@ function MultiGrinder:setupGUI()
         self.MiningPriorityAreaTarget = nil
         self.MiningPriorityAreaScanTimer = 0
         self.CurrentMiningPriorityAreaIndex = 1
-        self.CurrentCircleAngle = 0 -- Reset circle
+        self.LastMiningAngle = 0  -- Reset angle
         
         if not self.Enabled and self.SpecialAttackEnabled then
             self:StopSpecialAttack()
@@ -1382,6 +1307,7 @@ function MultiGrinder:setupGUI()
         self.TargetAcquiredTime = nil 
         self.PriorityAreaTarget = nil 
         self.MiningPriorityAreaTarget = nil
+        self.LastMiningAngle = 0  -- Reset angle
         restoreCamera(self)
         self:updateGUI()
     end)
@@ -1390,19 +1316,12 @@ function MultiGrinder:setupGUI()
     IgnoreButton.Visible = false 
     IgnoreButton.MouseButton1Click:Connect(function()
         if self.Enabled and self.CurrentTargetIdentifier then 
-            -- FIXED: Properly ignore and clear
-            self:ignoreTarget(self.CurrentTargetIdentifier)
-            
-            -- Force clear everything
+            self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+            print("[Multi-Bot] Manually ignored:", self.CurrentTargetIdentifier.Name)
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil 
             self.TargetAcquiredTime = nil 
-            self.PriorityAreaTarget = nil
-            self.TargetCache = {}
-            
-            -- Reset search to find new target immediately
-            self.LastSearchTime = 0
-            
+            self.LastMiningAngle = 0
             restoreCamera(self)
             self:updateGUI()
         end
@@ -1410,7 +1329,14 @@ function MultiGrinder:setupGUI()
 
     local ClearIgnoreButton = createButton(GeneralPage, "Clear Ignore List", Color3.fromRGB(220, 120, 0))
     ClearIgnoreButton.MouseButton1Click:Connect(function()
+        -- FIX: Clear regular table instead of weak table
         self.IgnoredTargets = {}
+        print("[Multi-Bot] Ignore list cleared")
+        if self.CurrentTargetIdentifier and self.IgnoredTargets[self.CurrentTargetIdentifier] then
+            self.CurrentTarget = nil
+            self.CurrentTargetIdentifier = nil
+            restoreCamera(self)
+        end
         self:updateGUI()
     end)
     
@@ -1452,7 +1378,7 @@ function MultiGrinder:setupGUI()
     end)
     
     createInputLabel(GeneralPage, "Combat Safe Distance (studs):")
-    local CombatDistanceInput = createTextBox(GeneralPage, tostring(self.CombatSafeDistance), "E.g., 10")
+    local CombatDistanceInput = createTextBox(GeneralPage, tostring(self.CombatSafeDistance), "E.g., 10 (safe range)")
     CombatDistanceInput.FocusLost:Connect(function()
         local dist = tonumber(CombatDistanceInput.Text)
         if dist and dist >= 0 then
@@ -1463,7 +1389,7 @@ function MultiGrinder:setupGUI()
     end)
     
     createInputLabel(GeneralPage, "Mining Distance (studs):")
-    local MiningDistanceInput = createTextBox(GeneralPage, tostring(self.MiningSafeDistance), "E.g., 1")
+    local MiningDistanceInput = createTextBox(GeneralPage, tostring(self.MiningSafeDistance), "E.g., 1 (very close)")
     MiningDistanceInput.FocusLost:Connect(function()
         local dist = tonumber(MiningDistanceInput.Text)
         if dist and dist >= 0 then
@@ -1477,50 +1403,6 @@ function MultiGrinder:setupGUI()
     MiningHitboxToggle.MouseButton1Click:Connect(function()
         self.MiningHitboxMode = not self.MiningHitboxMode
         self:updateGUI()
-    end)
-    
-    -- ADDED: Fly Controls (Yellow)
-    local FlyToggle = createButton(GeneralPage, "Fly Mode: ON", CONFIG.FlyColor)
-    FlyToggle.MouseButton1Click:Connect(function()
-        self.FlyEnabled = not self.FlyEnabled
-        self:updateGUI()
-    end)
-    
-    createInputLabel(GeneralPage, "Fly Height (studs above target):")
-    local FlyHeightInput = createTextBox(GeneralPage, tostring(self.FlyHeight), "E.g., 15")
-    FlyHeightInput.FocusLost:Connect(function()
-        local height = tonumber(FlyHeightInput.Text)
-        if height and height >= 0 then
-            self.FlyHeight = height
-        else
-            FlyHeightInput.Text = tostring(self.FlyHeight)
-        end
-    end)
-    
-    local NoclipToggle = createButton(GeneralPage, "Noclip: ON", CONFIG.ToggleOnColor)
-    NoclipToggle.MouseButton1Click:Connect(function()
-        self.NoclipEnabled = not self.NoclipEnabled
-        self:SetupNoclip()
-        self:updateGUI()
-    end)
-    
-    -- ADDED: Circle/Dodge Controls (Cyan)
-    local CircleToggle = createButton(GeneralPage, "Circle/Dodge: OFF", CONFIG.ToggleOffColor)
-    CircleToggle.MouseButton1Click:Connect(function()
-        self.CircleEnabled = not self.CircleEnabled
-        self.CurrentCircleAngle = 0 -- Reset angle
-        self:updateGUI()
-    end)
-    
-    createInputLabel(GeneralPage, "Circle Radius (studs):")
-    local CircleRadiusInput = createTextBox(GeneralPage, tostring(self.CircleRadius), "E.g., 8")
-    CircleRadiusInput.FocusLost:Connect(function()
-        local radius = tonumber(CircleRadiusInput.Text)
-        if radius and radius > 0 then
-            self.CircleRadius = radius
-        else
-            CircleRadiusInput.Text = tostring(self.CircleRadius)
-        end
     end)
 
     local SaveSettingsButton = createButton(GeneralPage, "Save Settings", CONFIG.AccentColor)
@@ -1678,6 +1560,7 @@ function MultiGrinder:setupGUI()
         self.MiningPriorityAreaTarget = nil
         self.CurrentTargetIdentifier = nil
         self.CurrentTarget = nil
+        self.LastMiningAngle = 0
         restoreCamera(self)
         self:updateGUI()
     end)
@@ -1735,12 +1618,6 @@ function MultiGrinder:setupGUI()
             CombatDistanceInput = CombatDistanceInput,
             MiningDistanceInput = MiningDistanceInput,
             MiningHitboxToggle = MiningHitboxToggle,
-            -- ADDED: Fly and Circle
-            FlyToggle = FlyToggle,
-            FlyHeightInput = FlyHeightInput,
-            NoclipToggle = NoclipToggle,
-            CircleToggle = CircleToggle,
-            CircleRadiusInput = CircleRadiusInput,
             SaveSettingsButton = SaveSettingsButton,
             ResetSettingsButton = ResetSettingsButton
         },
