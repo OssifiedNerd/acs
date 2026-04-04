@@ -65,7 +65,7 @@ local CONFIG = {
             Name = "Tomb Boss",
             StandTime = 35,
             StealHoldTime = 7,
-            CooldownTime = 900, -- 15 minutes
+            CooldownTime = 900,
         }
     }
 }
@@ -152,7 +152,7 @@ function MultiGrinder:new()
         BossEnabled = false,
         BossLoopEnabled = false,
         CurrentBoss = "Tomb",
-        BossSequenceState = "Idle", -- Idle, Stand, Steal, Fight, Cooldown
+        BossSequenceState = "Idle",
         BossSequenceTimer = 0,
         BossCooldownEndTime = 0,
         BossData = {
@@ -386,7 +386,6 @@ function MultiGrinder:findBossTarget(bossName)
                 end
             end
         end
-        end
     end
     
     return closestTarget
@@ -496,17 +495,14 @@ function MultiGrinder:executeBossSequence()
     
     if not bossConfig or not bossData then return false end
     
-    -- Check if we are in cooldown
     if self.BossSequenceState == "Cooldown" then
         local remaining = self.BossCooldownEndTime - tick()
         if remaining <= 0 then
-            -- Cooldown finished, restart sequence if looping
             if self.BossLoopEnabled then
                 self.BossSequenceState = "Stand"
                 self.BossSequenceTimer = tick()
                 print("[Boss] Cooldown finished, restarting sequence")
                 self:updateGUI()
-                -- Return true to immediately start the sequence this iteration
                 return self:executeBossSequence()
             else
                 self.BossEnabled = false
@@ -515,14 +511,11 @@ function MultiGrinder:executeBossSequence()
                 self:updateGUI()
             end
         else
-            -- Still in cooldown, do normal farming (return false)
             return false
         end
     end
     
-    -- Execute based on state
     if self.BossSequenceState == "Stand" then
-        -- Phase 1: Stand at specific position for 35 seconds
         if bossData.StandPosition then
             hrp.CFrame = bossData.StandPosition
         end
@@ -537,12 +530,10 @@ function MultiGrinder:executeBossSequence()
         return true
         
     elseif self.BossSequenceState == "Steal" then
-        -- Phase 2: TP to steal position and hold E (steal artifact)
         if bossData.StealPosition then
             hrp.CFrame = bossData.StealPosition
         end
         
-        -- Hold E for steal duration
         task.spawn(function()
             self:holdKey(Enum.KeyCode.E, bossConfig.StealHoldTime)
         end)
@@ -550,18 +541,16 @@ function MultiGrinder:executeBossSequence()
         self.BossSequenceState = "Fight"
         self.BossSequenceTimer = tick()
         self.BossFightStartTime = tick()
-        task.wait(bossConfig.StealHoldTime + 1) -- Wait for steal to complete
+        task.wait(bossConfig.StealHoldTime + 1)
         print("[Boss] Steal complete, moving to fight")
         self:updateGUI()
         return true
         
     elseif self.BossSequenceState == "Fight" then
-        -- Phase 3: Fight the boss
         if bossData.BossPosition then
             hrp.CFrame = bossData.BossPosition
         end
         
-        -- Find and fight boss
         local bossTarget = self:findBossTarget(bossData.TargetName)
         
         if bossTarget then
@@ -576,7 +565,6 @@ function MultiGrinder:executeBossSequence()
                 Camera.CFrame = CFrame.new(targetPos, bossTarget.Position)
             end
             
-            -- Attack boss
             local char = LocalPlayer.Character
             if char then
                 local tool = char:FindFirstChild(self.CombatToolName) or char:FindFirstChild(self.MiningToolName)
@@ -590,16 +578,14 @@ function MultiGrinder:executeBossSequence()
                 end
             end
             
-            -- Check if boss is dead or fight has taken too long (5 min max)
             local fightTime = tick() - self.BossFightStartTime
-            if fightTime > 300 then -- 5 minutes max fight time
+            if fightTime > 300 then
                 print("[Boss] Fight timeout, entering cooldown")
                 self:startBossCooldown()
             end
         else
-            -- No boss found, might be dead
             local fightTime = tick() - self.BossFightStartTime
-            if fightTime > 10 then -- Wait 10 seconds to see if boss spawns
+            if fightTime > 10 then
                 print("[Boss] Boss not found, assuming dead, entering cooldown")
                 self:startBossCooldown()
             end
@@ -1000,7 +986,6 @@ function MultiGrinder:SaveSettings()
         table.insert(settings.MiningPriorityAreas, {cf:GetComponents()})
     end
     
-    -- Save boss positions
     if self.BossData.Tomb then
         settings.BossData.Tomb = {
             StandPosition = self.BossData.Tomb.StandPosition and {self.BossData.Tomb.StandPosition:GetComponents()},
@@ -1075,7 +1060,6 @@ function MultiGrinder:LoadSettings()
         end
     end
     
-    -- Load boss data
     if settings.BossData and settings.BossData.Tomb then
         local tombData = settings.BossData.Tomb
         if tombData.StandPosition then
@@ -1250,7 +1234,6 @@ function MultiGrinder:updateGUI()
     miningPage.MiningPriorityAreaToggleButton.BackgroundColor3 = self.MiningPriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
     miningPage.MiningPriorityAreaCountLabel.Text = string.format("Areas: %d", #self.MiningPriorityAreas)
     
-    -- Boss page updates
     if bossPage then
         bossPage.BossToggleButton.Text = self.BossEnabled and "Tomb Boss: ON" or "Tomb Boss: OFF"
         bossPage.BossToggleButton.BackgroundColor3 = self.BossEnabled and CONFIG.BossColor or CONFIG.ToggleOffColor
@@ -1258,7 +1241,6 @@ function MultiGrinder:updateGUI()
         bossPage.BossLoopButton.Text = self.BossLoopEnabled and "Loop: ON" or "Loop: OFF"
         bossPage.BossLoopButton.BackgroundColor3 = self.BossLoopEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
         
-        -- Update status label
         local status = "Status: Idle"
         if self.BossEnabled then
             if self.BossSequenceState == "Cooldown" then
@@ -1269,7 +1251,6 @@ function MultiGrinder:updateGUI()
         end
         bossPage.StatusLabel.Text = status
         
-        -- Update position indicators
         local tombData = self.BossData.Tomb
         bossPage.StandPosButton.Text = tombData.StandPosition and "Stand Pos: SET" or "Stand Pos: NOT SET"
         bossPage.StealPosButton.Text = tombData.StealPosition and "Steal Pos: SET" or "Steal Pos: NOT SET"
