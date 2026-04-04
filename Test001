@@ -7,21 +7,22 @@ local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
 local Camera = Workspace.CurrentCamera
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
 -- CONFIGURATION
 local CONFIG = {
-    ScriptName = "Studlands (Special Attack Edition)",
+    ScriptName = "Studlands (Boss Edition)",
     DefaultMode = "Combat", 
     FarmSpeed = 0.25,
-    SpecialAttackCooldown = 0.1, -- Anti-lag: 0.15s between special attacks
+    SpecialAttackCooldown = 0.01,
     
     FrameWidth = 260, 
     TitleBarHeight = 35, 
     TabBarHeight = 30, 
-    ContentAreaHeight = 220,
+    ContentAreaHeight = 300,
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
@@ -33,7 +34,9 @@ local CONFIG = {
     AccentColor = Color3.fromRGB(0, 100, 200), 
     ToggleOnColor = Color3.fromRGB(0, 180, 0), 
     ToggleOffColor = Color3.fromRGB(180, 0, 0), 
-    SpecialAttackColor = Color3.fromRGB(255, 100, 0), -- Orange for special
+    SpecialAttackColor = Color3.fromRGB(255, 100, 0),
+    DistanceColor = Color3.fromRGB(100, 100, 255),
+    BossColor = Color3.fromRGB(200, 50, 200),
     InputBackgroundColor = Color3.fromRGB(50, 50, 60),
 
     CloseButtonBaseColor = Color3.fromRGB(200, 0, 0), 
@@ -44,7 +47,7 @@ local CONFIG = {
     Combat = {
         ToolName = "Unstable Cylindery Hammer", 
         TargetNames = {"Crab Champion"}, 
-        TeleportOffset = Vector3.new(0, 5, 5), 
+        TeleportOffset = Vector3.new(0, 5, 5),
         CombatPriorityAreaScanRadius = 50, 
         CombatPriorityAreaScanTime = 3,
     },
@@ -52,10 +55,19 @@ local CONFIG = {
     Mining = {
         ToolName = "Eternium Pickaxe",
         TargetNames = {"Ore"},
-        TeleportOffset = Vector3.new(0, 5, 2), 
+        TeleportOffset = Vector3.new(0, 3, 2),
         MiningPriorityAreaScanRadius = 30, 
         MiningPriorityAreaScanTime = 3,
     },
+    
+    Bosses = {
+        Tomb = {
+            Name = "Tomb Boss",
+            StandTime = 35,
+            StealHoldTime = 7,
+            CooldownTime = 900, -- 15 minutes
+        }
+    }
 }
 
 local function getRemotes()
@@ -94,7 +106,7 @@ function MultiGrinder:new()
         MiningTargetNames = table.concat(CONFIG.Mining.TargetNames, ", "),
         
         OriginalCameraCFrame = nil, 
-        IgnoredTargets = setmetatable({}, {__mode = "k"}),
+        IgnoredTargets = {},
         TargetAcquiredTime = nil, 
         AutoIgnoreEnabled = true, 
         
@@ -102,9 +114,13 @@ function MultiGrinder:new()
         TeleportOnRespawnEnabled = true,
         AutoBlockEnabled = false,
         
-        -- ADDED: Special Attack state
         SpecialAttackEnabled = false,
         SpecialAttackThread = nil,
+        
+        SafeDistanceEnabled = false,
+        CombatSafeDistance = 10,
+        MiningSafeDistance = 1,
+        MiningHitboxMode = false,
 
         PriorityAreas = {}, 
         PriorityAreaEnabled = false,
@@ -125,12 +141,30 @@ function MultiGrinder:new()
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
         IsMinimized = false,
         
-        -- Anti-lag optimizations
         TargetCache = {},
         LastSearchTime = 0,
         SearchCooldown = 0.3,
         LastAttackTime = 0,
-        AttackCooldown = 0.1, -- Minimum time between normal attacks
+        AttackCooldown = 0.1,
+        LastMiningAngle = 0,
+        
+        -- Boss system
+        BossEnabled = false,
+        BossLoopEnabled = false,
+        CurrentBoss = "Tomb",
+        BossSequenceState = "Idle", -- Idle, Stand, Steal, Fight, Cooldown
+        BossSequenceTimer = 0,
+        BossCooldownEndTime = 0,
+        BossData = {
+            Tomb = {
+                StandPosition = nil,
+                StealPosition = nil,
+                BossPosition = nil,
+                TargetName = "Tomb",
+            }
+        },
+        BossCurrentTarget = nil,
+        BossFightStartTime = nil,
         
     }, MultiGrinder)
 
@@ -172,9 +206,8 @@ function MultiGrinder:SetupAntiAfk()
     end)
 end
 
--- ADDED: Special Attack Handler with anti-lag
 function MultiGrinder:StartSpecialAttack()
-    if self.SpecialAttackThread then return end -- Already running
+    if self.SpecialAttackThread then return end
     
     self.SpecialAttackThread = task.spawn(function()
         while self.SpecialAttackEnabled and self.Enabled do
@@ -182,12 +215,10 @@ function MultiGrinder:StartSpecialAttack()
                 local char = LocalPlayer.Character
                 if not char then return end
                 
-                -- Get current tool (Combat or Mining based on mode)
                 local toolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
                 local tool = char:FindFirstChild(toolName)
                 
                 if tool and self.Remotes.UseItem then
-                    -- Special attack args: [2] = true
                     local args = {
                         [1] = tool,
                         [2] = true,
@@ -201,7 +232,6 @@ function MultiGrinder:StartSpecialAttack()
                 warn("[Multi-Bot] Special attack error: " .. tostring(err))
             end
             
-            -- Anti-lag cooldown
             task.wait(CONFIG.SpecialAttackCooldown)
         end
         
@@ -211,7 +241,6 @@ end
 
 function MultiGrinder:StopSpecialAttack()
     self.SpecialAttackEnabled = false
-    -- Thread will self-terminate on next loop check
 end
 
 function MultiGrinder:getHumanoidRootPart()
@@ -229,7 +258,6 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
--- OPTIMIZED: Limited search with caching
 function MultiGrinder:findClosestTarget(position, names)
     local currentTime = tick()
     if currentTime - self.LastSearchTime < self.SearchCooldown and self.TargetCache.LastPosition then
@@ -243,13 +271,20 @@ function MultiGrinder:findClosestTarget(position, names)
     local closestTargetKey = nil 
     local minDistance = math.huge
     
-    local children = Workspace:GetChildren()
-    for _, obj in ipairs(children) do
+    local descendants = Workspace:GetDescendants()
+    for _, obj in ipairs(descendants) do
         for _, name in ipairs(names) do
             if string.find(string.lower(obj.Name), string.lower(name)) then
                 local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
                 if targetPart and targetPart.Parent ~= LocalPlayer.Character then
-                    local targetKey = targetPart.Parent:FindFirstChildOfClass("Humanoid") and targetPart.Parent or targetPart
+                    local parent = targetPart.Parent
+                    local humanoid = parent:FindFirstChildOfClass("Humanoid")
+                    
+                    if humanoid and humanoid.Health <= 0 then
+                        continue
+                    end
+                    
+                    local targetKey = humanoid and parent or targetPart
                     
                     if not self.IgnoredTargets[targetKey] then
                         local dist = (targetPart.Position - position).Magnitude
@@ -330,20 +365,45 @@ function MultiGrinder:findClosestResourceInArea(position, radius, names)
     return closestTargetPart, closestTargetKey
 end
 
--- OPTIMIZED: Normal attack with cooldown
+function MultiGrinder:findBossTarget(bossName)
+    local hrp = self:getHumanoidRootPart()
+    if not hrp then return nil end
+    
+    local closestTarget = nil
+    local minDistance = math.huge
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if string.find(string.lower(obj.Name), string.lower(bossName)) then
+            local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
+            if targetPart and targetPart.Parent ~= LocalPlayer.Character then
+                local humanoid = targetPart.Parent:FindFirstChildOfClass("Humanoid")
+                if humanoid and humanoid.Health > 0 then
+                    local dist = (targetPart.Position - hrp.Position).Magnitude
+                    if dist < minDistance then
+                        minDistance = dist
+                        closestTarget = targetPart
+                    end
+                end
+            end
+        end
+        end
+    end
+    
+    return closestTarget
+end
+
 function MultiGrinder:simulateAction(toolInstance)
     if not self.Remotes.UseItem or not toolInstance then return end
     
-    -- Anti-lag: Check if enough time passed since last attack
     local currentTime = tick()
     if currentTime - self.LastAttackTime < self.AttackCooldown then
-        return -- Skip this attack to prevent lag
+        return
     end
     self.LastAttackTime = currentTime
     
     local args = {
         [1] = toolInstance,
-        [2] = false, -- Normal attack
+        [2] = false,
         [5] = 1.1039999771118163
     }
     
@@ -366,11 +426,209 @@ function MultiGrinder:equipTool(toolName)
     return false
 end
 
+function MultiGrinder:holdKey(keyCode, duration)
+    VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+    task.wait(duration)
+    VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+end
+
 local function restoreCamera(self)
     if self.OriginalCameraCFrame then 
         Camera.CFrame = self.OriginalCameraCFrame 
         self.OriginalCameraCFrame = nil 
     end
+end
+
+function MultiGrinder:calculateTeleportPosition(targetPosition, currentPosition, mode)
+    if not self.SafeDistanceEnabled then
+        local offset = (mode == "Combat") and CONFIG.Combat.TeleportOffset or CONFIG.Mining.TeleportOffset
+        return targetPosition + offset
+    end
+    
+    if mode == "Combat" then
+        local direction = (currentPosition - targetPosition)
+        direction = Vector3.new(direction.X, 0, direction.Z)
+        
+        if direction.Magnitude < 0.1 then
+            direction = Vector3.new(math.random(-100, 100), 0, math.random(-100, 100))
+        end
+        
+        direction = direction.Unit
+        local safePosition = targetPosition + (direction * self.CombatSafeDistance)
+        safePosition = safePosition + Vector3.new(0, 5, 0)
+        
+        return safePosition
+    else
+        local baseDistance = self.MiningSafeDistance
+        local heightOffset = 3
+        
+        if self.MiningHitboxMode then
+            self.LastMiningAngle = self.LastMiningAngle + 45
+            if self.LastMiningAngle >= 360 then self.LastMiningAngle = 0 end
+            
+            local rad = math.rad(self.LastMiningAngle)
+            local offsetX = math.cos(rad) * baseDistance
+            local offsetZ = math.sin(rad) * baseDistance
+            
+            return targetPosition + Vector3.new(offsetX, heightOffset, offsetZ)
+        else
+            local direction = (currentPosition - targetPosition)
+            direction = Vector3.new(direction.X, 0, direction.Z)
+            
+            if direction.Magnitude < 0.1 then
+                direction = Vector3.new(0, 0, 1)
+            else
+                direction = direction.Unit
+            end
+            
+            return targetPosition + (direction * baseDistance) + Vector3.new(0, heightOffset, 0)
+        end
+    end
+end
+
+-- BOSS SYSTEM FUNCTIONS
+function MultiGrinder:executeBossSequence()
+    local hrp = self:getHumanoidRootPart()
+    if not hrp then return false end
+    
+    local bossConfig = CONFIG.Bosses[self.CurrentBoss]
+    local bossData = self.BossData[self.CurrentBoss]
+    
+    if not bossConfig or not bossData then return false end
+    
+    -- Check if we are in cooldown
+    if self.BossSequenceState == "Cooldown" then
+        local remaining = self.BossCooldownEndTime - tick()
+        if remaining <= 0 then
+            -- Cooldown finished, restart sequence if looping
+            if self.BossLoopEnabled then
+                self.BossSequenceState = "Stand"
+                self.BossSequenceTimer = tick()
+                print("[Boss] Cooldown finished, restarting sequence")
+                self:updateGUI()
+                -- Return true to immediately start the sequence this iteration
+                return self:executeBossSequence()
+            else
+                self.BossEnabled = false
+                self.BossSequenceState = "Idle"
+                print("[Boss] Cooldown finished, loop disabled")
+                self:updateGUI()
+            end
+        else
+            -- Still in cooldown, do normal farming (return false)
+            return false
+        end
+    end
+    
+    -- Execute based on state
+    if self.BossSequenceState == "Stand" then
+        -- Phase 1: Stand at specific position for 35 seconds
+        if bossData.StandPosition then
+            hrp.CFrame = bossData.StandPosition
+        end
+        
+        local elapsed = tick() - self.BossSequenceTimer
+        if elapsed >= bossConfig.StandTime then
+            self.BossSequenceState = "Steal"
+            self.BossSequenceTimer = tick()
+            print("[Boss] Stand time complete, moving to steal")
+            self:updateGUI()
+        end
+        return true
+        
+    elseif self.BossSequenceState == "Steal" then
+        -- Phase 2: TP to steal position and hold E (steal artifact)
+        if bossData.StealPosition then
+            hrp.CFrame = bossData.StealPosition
+        end
+        
+        -- Hold E for steal duration
+        task.spawn(function()
+            self:holdKey(Enum.KeyCode.E, bossConfig.StealHoldTime)
+        end)
+        
+        self.BossSequenceState = "Fight"
+        self.BossSequenceTimer = tick()
+        self.BossFightStartTime = tick()
+        task.wait(bossConfig.StealHoldTime + 1) -- Wait for steal to complete
+        print("[Boss] Steal complete, moving to fight")
+        self:updateGUI()
+        return true
+        
+    elseif self.BossSequenceState == "Fight" then
+        -- Phase 3: Fight the boss
+        if bossData.BossPosition then
+            hrp.CFrame = bossData.BossPosition
+        end
+        
+        -- Find and fight boss
+        local bossTarget = self:findBossTarget(bossData.TargetName)
+        
+        if bossTarget then
+            self.BossCurrentTarget = bossTarget
+            local targetPos = self:calculateTeleportPosition(bossTarget.Position, hrp.Position, "Combat")
+            hrp.CFrame = CFrame.new(targetPos)
+            
+            if Camera then
+                if not self.OriginalCameraCFrame then
+                    self.OriginalCameraCFrame = Camera.CFrame 
+                end
+                Camera.CFrame = CFrame.new(targetPos, bossTarget.Position)
+            end
+            
+            -- Attack boss
+            local char = LocalPlayer.Character
+            if char then
+                local tool = char:FindFirstChild(self.CombatToolName) or char:FindFirstChild(self.MiningToolName)
+                if not tool then
+                    self:equipTool(self.CombatToolName)
+                    tool = char:WaitForChild(self.CombatToolName, 1)
+                end
+                
+                if tool then
+                    self:simulateAction(tool)
+                end
+            end
+            
+            -- Check if boss is dead or fight has taken too long (5 min max)
+            local fightTime = tick() - self.BossFightStartTime
+            if fightTime > 300 then -- 5 minutes max fight time
+                print("[Boss] Fight timeout, entering cooldown")
+                self:startBossCooldown()
+            end
+        else
+            -- No boss found, might be dead
+            local fightTime = tick() - self.BossFightStartTime
+            if fightTime > 10 then -- Wait 10 seconds to see if boss spawns
+                print("[Boss] Boss not found, assuming dead, entering cooldown")
+                self:startBossCooldown()
+            end
+        end
+        return true
+    end
+    
+    return false
+end
+
+function MultiGrinder:startBossCooldown()
+    self.BossSequenceState = "Cooldown"
+    self.BossCooldownEndTime = tick() + CONFIG.Bosses[self.CurrentBoss].CooldownTime
+    self.BossCurrentTarget = nil
+    restoreCamera(self)
+    print("[Boss] Entering 15 minute cooldown - resuming normal farming")
+    self:updateGUI()
+end
+
+function MultiGrinder:getBossCooldownRemaining()
+    if self.BossSequenceState == "Cooldown" then
+        local remaining = self.BossCooldownEndTime - tick()
+        if remaining > 0 then
+            local mins = math.floor(remaining / 60)
+            local secs = math.floor(remaining % 60)
+            return string.format("%02d:%02d", mins, secs)
+        end
+    end
+    return "Ready"
 end
 
 function MultiGrinder:executePriorityAreaCombat(hrp)
@@ -399,6 +657,7 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
             self.CurrentTargetIdentifier = newTargetKey 
             target = self.PriorityAreaTarget
             self.PriorityAreaScanTimer = 0 
+            self.TargetAcquiredTime = tick()
             self:updateGUI()
         else
             self.PriorityAreaScanTimer = self.PriorityAreaScanTimer + CONFIG.FarmSpeed
@@ -417,8 +676,7 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
         end
     end
 
-    local offset = CONFIG.Combat.TeleportOffset
-    local targetPos = target.Position + offset
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
     
     self.LastKnownPosition = hrp.Position 
     hrp.CFrame = CFrame.new(targetPos)
@@ -439,8 +697,7 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        local targetCFrame = CFrame.new(target.Position)
-        Camera.CFrame = CFrame.new(targetCFrame.Position + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.Position)
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
         
         self:simulateAction(equippedTool)
     else
@@ -486,11 +743,12 @@ function MultiGrinder:executeCombatAction(hrp)
         self:updateGUI() 
     end
     
-    if self.AutoIgnoreEnabled and target and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
+    if self.AutoIgnoreEnabled and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
         local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
-        if humanoid and humanoid.Health > 0 then
+        if humanoid and humanoid.Health > 0 and humanoid.Health == humanoid.MaxHealth then
             if self.CurrentTargetIdentifier then
                 self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+                print("[Multi-Bot] Auto-ignored stuck mob:", self.CurrentTargetIdentifier.Name)
             end
             
             self.CurrentTarget = nil 
@@ -499,9 +757,8 @@ function MultiGrinder:executeCombatAction(hrp)
             restoreCamera(self)
             self:updateGUI()
             return false 
-        else
-            self.TargetAcquiredTime = nil
         end
+        self.TargetAcquiredTime = tick() - 5
     end
     
     local char = LocalPlayer.Character
@@ -517,8 +774,7 @@ function MultiGrinder:executeCombatAction(hrp)
     
     if not equippedTool then return false end
     
-    local offset = CONFIG.Combat.TeleportOffset
-    local targetPos = target.Position + offset
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
     
     self.LastKnownPosition = hrp.Position
     hrp.CFrame = CFrame.new(targetPos)
@@ -528,8 +784,7 @@ function MultiGrinder:executeCombatAction(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        local targetCFrame = CFrame.new(target.Position)
-        Camera.CFrame = CFrame.new(targetCFrame.Position + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.Position)
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
 
         self:simulateAction(equippedTool)
     else
@@ -557,6 +812,7 @@ function MultiGrinder:executePriorityAreaMining(hrp)
     if not targetIsValid then
         self.MiningPriorityAreaTarget = nil
         self.CurrentTargetIdentifier = nil 
+        self.LastMiningAngle = 0
         
         local targetNames = self:getTargetNames("Mining")
         local newTarget, newTargetKey = self:findClosestResourceInArea(hrp.Position, self.MiningPriorityAreaScanRadius, targetNames)
@@ -584,8 +840,13 @@ function MultiGrinder:executePriorityAreaMining(hrp)
         end
     end
     
-    local offset = CONFIG.Mining.TeleportOffset
-    local targetPos = target.Position + offset
+    if not target or not target.Parent then
+        self.MiningPriorityAreaTarget = nil
+        self.LastMiningAngle = 0
+        return false
+    end
+    
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Mining")
     
     self.LastKnownPosition = hrp.Position 
     hrp.CFrame = CFrame.new(targetPos)
@@ -606,10 +867,13 @@ function MultiGrinder:executePriorityAreaMining(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        local targetCFrame = CFrame.new(target.Position)
-        Camera.CFrame = CFrame.new(targetCFrame.Position + (targetCFrame.LookVector * -5) + Vector3.new(0, 2, 0), targetCFrame.Position)
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
 
         self:simulateAction(equippedTool)
+        
+        if not target.Parent then
+            self.LastMiningAngle = 0
+        end
     else
         restoreCamera(self) 
     end
@@ -634,12 +898,17 @@ function MultiGrinder:executeMiningAction(hrp)
     local needsNewTarget = not resource or not resource.Parent
 
     if needsNewTarget then
+        if self.CurrentTarget then
+            self.LastMiningAngle = 0
+        end
+        
         local targetNames = self:getTargetNames("Mining")
         local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newResource then 
             self.CurrentTarget = nil
             self.CurrentTargetIdentifier = nil 
+            self.LastMiningAngle = 0
             restoreCamera(self) 
             self:updateGUI() 
             return false 
@@ -648,7 +917,14 @@ function MultiGrinder:executeMiningAction(hrp)
         self.CurrentTarget = newResource
         self.CurrentTargetIdentifier = newResourceKey 
         resource = self.CurrentTarget
+        self.LastMiningAngle = 0
         self:updateGUI() 
+    end
+    
+    if not resource or not resource.Parent then
+        self.CurrentTarget = nil
+        self.LastMiningAngle = 0
+        return false
     end
     
     local char = LocalPlayer.Character
@@ -664,21 +940,23 @@ function MultiGrinder:executeMiningAction(hrp)
     
     if not equippedTool then return false end
     
-    local offset = CONFIG.Mining.TeleportOffset
-    local resourcePos = resource.Position + offset
+    local targetPos = self:calculateTeleportPosition(resource.Position, hrp.Position, "Mining")
     
     self.LastKnownPosition = hrp.Position
-    hrp.CFrame = CFrame.new(resourcePos)
+    hrp.CFrame = CFrame.new(targetPos)
     
     if Camera and resource and resource.Position then 
         if not self.OriginalCameraCFrame then
             self.OriginalCameraCFrame = Camera.CFrame 
         end
 
-        local resourceCFrame = CFrame.new(resource.Position)
-        Camera.CFrame = CFrame.new(resourceCFrame.Position + (resourceCFrame.LookVector * -5) + Vector3.new(0, 2, 0), resourceCFrame.Position)
+        Camera.CFrame = CFrame.new(targetPos, resource.Position)
         
         self:simulateAction(equippedTool)
+        
+        if not resource.Parent then
+            self.LastMiningAngle = 0
+        end
     else
         restoreCamera(self) 
     end
@@ -701,7 +979,14 @@ function MultiGrinder:SaveSettings()
         AutoIgnoreEnabled = self.AutoIgnoreEnabled,
         TeleportOnRespawnEnabled = self.TeleportOnRespawnEnabled,
         AutoBlockEnabled = self.AutoBlockEnabled,
-        SpecialAttackEnabled = self.SpecialAttackEnabled, -- ADDED
+        SpecialAttackEnabled = self.SpecialAttackEnabled,
+        SafeDistanceEnabled = self.SafeDistanceEnabled,
+        CombatSafeDistance = self.CombatSafeDistance,
+        MiningSafeDistance = self.MiningSafeDistance,
+        MiningHitboxMode = self.MiningHitboxMode,
+        BossEnabled = self.BossEnabled,
+        BossLoopEnabled = self.BossLoopEnabled,
+        BossData = self.BossData,
         PriorityAreas = {},
         MiningPriorityAreas = {},
         UIPos = {}
@@ -713,6 +998,16 @@ function MultiGrinder:SaveSettings()
     
     for _, cf in ipairs(self.MiningPriorityAreas) do
         table.insert(settings.MiningPriorityAreas, {cf:GetComponents()})
+    end
+    
+    -- Save boss positions
+    if self.BossData.Tomb then
+        settings.BossData.Tomb = {
+            StandPosition = self.BossData.Tomb.StandPosition and {self.BossData.Tomb.StandPosition:GetComponents()},
+            StealPosition = self.BossData.Tomb.StealPosition and {self.BossData.Tomb.StealPosition:GetComponents()},
+            BossPosition = self.BossData.Tomb.BossPosition and {self.BossData.Tomb.BossPosition:GetComponents()},
+            TargetName = self.BossData.Tomb.TargetName,
+        }
     end
 
     if self.MainGui and self.MainGui.MainFrame then
@@ -756,7 +1051,15 @@ function MultiGrinder:LoadSettings()
     self.AutoIgnoreEnabled = settings.AutoIgnoreEnabled ~= false
     self.TeleportOnRespawnEnabled = settings.TeleportOnRespawnEnabled ~= false
     self.AutoBlockEnabled = settings.AutoBlockEnabled == true
-    self.SpecialAttackEnabled = settings.SpecialAttackEnabled == true -- ADDED
+    self.SpecialAttackEnabled = settings.SpecialAttackEnabled == true
+    
+    self.SafeDistanceEnabled = settings.SafeDistanceEnabled == true
+    self.CombatSafeDistance = settings.CombatSafeDistance or 10
+    self.MiningSafeDistance = settings.MiningSafeDistance or 1
+    self.MiningHitboxMode = settings.MiningHitboxMode == true
+    
+    self.BossEnabled = settings.BossEnabled == true
+    self.BossLoopEnabled = settings.BossLoopEnabled == true
 
     if settings.PriorityAreas then
         self.PriorityAreas = {}
@@ -769,6 +1072,23 @@ function MultiGrinder:LoadSettings()
         self.MiningPriorityAreas = {}
         for _, components in ipairs(settings.MiningPriorityAreas) do
             table.insert(self.MiningPriorityAreas, CFrame.new(unpack(components)))
+        end
+    end
+    
+    -- Load boss data
+    if settings.BossData and settings.BossData.Tomb then
+        local tombData = settings.BossData.Tomb
+        if tombData.StandPosition then
+            self.BossData.Tomb.StandPosition = CFrame.new(unpack(tombData.StandPosition))
+        end
+        if tombData.StealPosition then
+            self.BossData.Tomb.StealPosition = CFrame.new(unpack(tombData.StealPosition))
+        end
+        if tombData.BossPosition then
+            self.BossData.Tomb.BossPosition = CFrame.new(unpack(tombData.BossPosition))
+        end
+        if tombData.TargetName then
+            self.BossData.Tomb.TargetName = tombData.TargetName
         end
     end
 
@@ -798,10 +1118,29 @@ function MultiGrinder:ResetSettings()
     self.AutoIgnoreEnabled = true
     self.TeleportOnRespawnEnabled = true
     self.AutoBlockEnabled = false
-    self.SpecialAttackEnabled = false -- ADDED
+    self.SpecialAttackEnabled = false
+    
+    self.SafeDistanceEnabled = false
+    self.CombatSafeDistance = 10
+    self.MiningSafeDistance = 1
+    self.MiningHitboxMode = false
+    
+    self.BossEnabled = false
+    self.BossLoopEnabled = false
+    self.BossSequenceState = "Idle"
     
     self.PriorityAreas = {}
     self.MiningPriorityAreas = {}
+    self.IgnoredTargets = {}
+    
+    self.BossData = {
+        Tomb = {
+            StandPosition = nil,
+            StealPosition = nil,
+            BossPosition = nil,
+            TargetName = "Tomb",
+        }
+    }
     
     self.UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2))
     if self.MainGui and self.MainGui.MainFrame then
@@ -820,6 +1159,13 @@ function MultiGrinder:ResetSettings()
         self.MainGui.MiningPage.TargetNamesInput.Text = self.MiningTargetNames
         self.MainGui.MiningPage.MiningPriorityRadiusInput.Text = self.MiningPriorityAreaScanRadius
         self.MainGui.MiningPage.MiningPriorityScanTimeInput.Text = self.MiningPriorityAreaScanTime
+        
+        self.MainGui.GeneralPage.SafeDistanceToggle.Text = "Safe Distance: OFF"
+        self.MainGui.GeneralPage.SafeDistanceToggle.BackgroundColor3 = CONFIG.ToggleOffColor
+        self.MainGui.GeneralPage.CombatDistanceInput.Text = tostring(self.CombatSafeDistance)
+        self.MainGui.GeneralPage.MiningDistanceInput.Text = tostring(self.MiningSafeDistance)
+        self.MainGui.GeneralPage.MiningHitboxToggle.Text = "Mining Hitbox+: OFF"
+        self.MainGui.GeneralPage.MiningHitboxToggle.BackgroundColor3 = CONFIG.ToggleOffColor
         
         self:updateGUI()
     end
@@ -852,6 +1198,7 @@ function MultiGrinder:updateGUI()
     local generalPage = self.MainGui.GeneralPage
     local combatPage = self.MainGui.CombatPage
     local miningPage = self.MainGui.MiningPage
+    local bossPage = self.MainGui.BossPage
     
     if self.Enabled then
         generalPage.ToggleButton.Text = "ON"
@@ -882,9 +1229,14 @@ function MultiGrinder:updateGUI()
     generalPage.AutoBlockButton.Text = self.AutoBlockEnabled and "Auto-Block: ON" or "Auto-Block: OFF"
     generalPage.AutoBlockButton.BackgroundColor3 = self.AutoBlockEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
     
-    -- ADDED: Special Attack UI update
     generalPage.SpecialAttackButton.Text = self.SpecialAttackEnabled and "SPECIAL ATTACK: ON" or "SPECIAL ATTACK: OFF"
     generalPage.SpecialAttackButton.BackgroundColor3 = self.SpecialAttackEnabled and CONFIG.SpecialAttackColor or CONFIG.ToggleOffColor
+    
+    generalPage.SafeDistanceToggle.Text = self.SafeDistanceEnabled and "Safe Distance: ON" or "Safe Distance: OFF"
+    generalPage.SafeDistanceToggle.BackgroundColor3 = self.SafeDistanceEnabled and CONFIG.DistanceColor or CONFIG.ToggleOffColor
+    
+    generalPage.MiningHitboxToggle.Text = self.MiningHitboxMode and "Mining Hitbox+: ON" or "Mining Hitbox+: OFF"
+    generalPage.MiningHitboxToggle.BackgroundColor3 = self.MiningHitboxMode and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
 
     local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
     local modeDisplayName = (self.Mode == "Combat") and "Attacking" or "Mining"
@@ -897,6 +1249,32 @@ function MultiGrinder:updateGUI()
     miningPage.MiningPriorityAreaToggleButton.Text = self.MiningPriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
     miningPage.MiningPriorityAreaToggleButton.BackgroundColor3 = self.MiningPriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
     miningPage.MiningPriorityAreaCountLabel.Text = string.format("Areas: %d", #self.MiningPriorityAreas)
+    
+    -- Boss page updates
+    if bossPage then
+        bossPage.BossToggleButton.Text = self.BossEnabled and "Tomb Boss: ON" or "Tomb Boss: OFF"
+        bossPage.BossToggleButton.BackgroundColor3 = self.BossEnabled and CONFIG.BossColor or CONFIG.ToggleOffColor
+        
+        bossPage.BossLoopButton.Text = self.BossLoopEnabled and "Loop: ON" or "Loop: OFF"
+        bossPage.BossLoopButton.BackgroundColor3 = self.BossLoopEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+        
+        -- Update status label
+        local status = "Status: Idle"
+        if self.BossEnabled then
+            if self.BossSequenceState == "Cooldown" then
+                status = "Cooldown: " .. self:getBossCooldownRemaining() .. " (Farming...)"
+            else
+                status = "Status: " .. self.BossSequenceState
+            end
+        end
+        bossPage.StatusLabel.Text = status
+        
+        -- Update position indicators
+        local tombData = self.BossData.Tomb
+        bossPage.StandPosButton.Text = tombData.StandPosition and "Stand Pos: SET" or "Stand Pos: NOT SET"
+        bossPage.StealPosButton.Text = tombData.StealPosition and "Steal Pos: SET" or "Steal Pos: NOT SET"
+        bossPage.BossPosButton.Text = tombData.BossPosition and "Boss Pos: SET" or "Boss Pos: NOT SET"
+    end
 
     for tabName, tabButton in pairs(self.MainGui.Tabs) do
         if tabName == self.CurrentTab then
@@ -1114,7 +1492,7 @@ function MultiGrinder:setupGUI()
     TabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
     TabLayout.Parent = TabBar
 
-    local TabNames = {"General", "Combat", "Mining"}
+    local TabNames = {"General", "Combat", "Mining", "Bosses"}
     local Tabs = {}
     
     for _, tabName in ipairs(TabNames) do
@@ -1166,8 +1544,8 @@ function MultiGrinder:setupGUI()
         self.MiningPriorityAreaTarget = nil
         self.MiningPriorityAreaScanTimer = 0
         self.CurrentMiningPriorityAreaIndex = 1
+        self.LastMiningAngle = 0
         
-        -- Stop special attack if bot turned off
         if not self.Enabled and self.SpecialAttackEnabled then
             self:StopSpecialAttack()
         elseif self.Enabled and self.SpecialAttackEnabled then
@@ -1194,6 +1572,7 @@ function MultiGrinder:setupGUI()
         self.TargetAcquiredTime = nil 
         self.PriorityAreaTarget = nil 
         self.MiningPriorityAreaTarget = nil
+        self.LastMiningAngle = 0
         restoreCamera(self)
         self:updateGUI()
     end)
@@ -1203,9 +1582,11 @@ function MultiGrinder:setupGUI()
     IgnoreButton.MouseButton1Click:Connect(function()
         if self.Enabled and self.CurrentTargetIdentifier then 
             self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+            print("[Multi-Bot] Manually ignored:", self.CurrentTargetIdentifier.Name)
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil 
             self.TargetAcquiredTime = nil 
+            self.LastMiningAngle = 0
             restoreCamera(self)
             self:updateGUI()
         end
@@ -1213,7 +1594,8 @@ function MultiGrinder:setupGUI()
 
     local ClearIgnoreButton = createButton(GeneralPage, "Clear Ignore List", Color3.fromRGB(220, 120, 0))
     ClearIgnoreButton.MouseButton1Click:Connect(function()
-        self.IgnoredTargets = setmetatable({}, {__mode = "k"})
+        self.IgnoredTargets = {}
+        print("[Multi-Bot] Ignore list cleared")
         if self.CurrentTargetIdentifier and self.IgnoredTargets[self.CurrentTargetIdentifier] then
             self.CurrentTarget = nil
             self.CurrentTargetIdentifier = nil
@@ -1240,7 +1622,6 @@ function MultiGrinder:setupGUI()
         self:updateGUI()
     end)
 
-    -- ADDED: Special Attack Button (Orange color)
     local SpecialAttackButton = createButton(GeneralPage, "SPECIAL ATTACK: OFF", CONFIG.ToggleOffColor)
     SpecialAttackButton.MouseButton1Click:Connect(function()
         self.SpecialAttackEnabled = not self.SpecialAttackEnabled
@@ -1251,6 +1632,40 @@ function MultiGrinder:setupGUI()
             self:StopSpecialAttack()
         end
         
+        self:updateGUI()
+    end)
+
+    local SafeDistanceToggle = createButton(GeneralPage, "Safe Distance: OFF", CONFIG.ToggleOffColor)
+    SafeDistanceToggle.MouseButton1Click:Connect(function()
+        self.SafeDistanceEnabled = not self.SafeDistanceEnabled
+        self:updateGUI()
+    end)
+    
+    createInputLabel(GeneralPage, "Combat Safe Distance (studs):")
+    local CombatDistanceInput = createTextBox(GeneralPage, tostring(self.CombatSafeDistance), "E.g., 10 (safe range)")
+    CombatDistanceInput.FocusLost:Connect(function()
+        local dist = tonumber(CombatDistanceInput.Text)
+        if dist and dist >= 0 then
+            self.CombatSafeDistance = dist
+        else
+            CombatDistanceInput.Text = tostring(self.CombatSafeDistance)
+        end
+    end)
+    
+    createInputLabel(GeneralPage, "Mining Distance (studs):")
+    local MiningDistanceInput = createTextBox(GeneralPage, tostring(self.MiningSafeDistance), "E.g., 1 (very close)")
+    MiningDistanceInput.FocusLost:Connect(function()
+        local dist = tonumber(MiningDistanceInput.Text)
+        if dist and dist >= 0 then
+            self.MiningSafeDistance = dist
+        else
+            MiningDistanceInput.Text = tostring(self.MiningSafeDistance)
+        end
+    end)
+    
+    local MiningHitboxToggle = createButton(GeneralPage, "Mining Hitbox+: OFF", CONFIG.ToggleOffColor)
+    MiningHitboxToggle.MouseButton1Click:Connect(function()
+        self.MiningHitboxMode = not self.MiningHitboxMode
         self:updateGUI()
     end)
 
@@ -1409,6 +1824,7 @@ function MultiGrinder:setupGUI()
         self.MiningPriorityAreaTarget = nil
         self.CurrentTargetIdentifier = nil
         self.CurrentTarget = nil
+        self.LastMiningAngle = 0
         restoreCamera(self)
         self:updateGUI()
     end)
@@ -1445,6 +1861,95 @@ function MultiGrinder:setupGUI()
     MiningPriorityAreaCountLabel.Parent = MiningPage
 
     Pages["Mining"] = MiningPage
+    
+    -- BOSSES PAGE
+    local BossPage = createContentPage(ContentContainer, "Bosses")
+    local BossLayout = createListLayout(BossPage)
+    BossLayout.Padding = UDim.new(0, 5)
+    
+    createInputLabel(BossPage, "Tomb Boss Automation")
+    createInputLabel(BossPage, "Sequence: Stand (35s) -> Steal -> Fight")
+    
+    -- Status Label
+    local StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Name = "StatusLabel"
+    StatusLabel.Size = UDim2.new(0.9, 0, 0, 20)
+    StatusLabel.Text = "Status: Idle"
+    StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 100)
+    StatusLabel.Font = Enum.Font.GothamBold
+    StatusLabel.TextSize = 14
+    StatusLabel.BackgroundTransparency = 1
+    StatusLabel.TextXAlignment = Enum.TextXAlignment.Center
+    StatusLabel.Parent = BossPage
+    
+    -- Toggle Buttons
+    local BossToggleButton = createButton(BossPage, "Tomb Boss: OFF", CONFIG.ToggleOffColor, 25)
+    BossToggleButton.MouseButton1Click:Connect(function()
+        self.BossEnabled = not self.BossEnabled
+        if self.BossEnabled then
+            self.BossSequenceState = "Stand"
+            self.BossSequenceTimer = tick()
+            print("[Boss] Started Tomb sequence")
+        else
+            self.BossSequenceState = "Idle"
+            restoreCamera(self)
+        end
+        self:updateGUI()
+    end)
+    
+    local BossLoopButton = createButton(BossPage, "Loop: OFF", CONFIG.ToggleOffColor, 25)
+    BossLoopButton.MouseButton1Click:Connect(function()
+        self.BossLoopEnabled = not self.BossLoopEnabled
+        self:updateGUI()
+    end)
+    
+    createInputLabel(BossPage, "Boss Target Name:")
+    local BossTargetInput = createTextBox(BossPage, self.BossData.Tomb.TargetName or "Tomb", "E.g., Tomb")
+    BossTargetInput.FocusLost:Connect(function()
+        self.BossData.Tomb.TargetName = BossTargetInput.Text
+    end)
+    
+    -- Position Buttons
+    local StandPosButton = createButton(BossPage, "Stand Pos: NOT SET", Color3.fromRGB(100, 100, 100), 25)
+    StandPosButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            self.BossData.Tomb.StandPosition = hrp.CFrame
+            print("[Boss] Stand position set")
+            self:updateGUI()
+        end
+    end)
+    
+    local StealPosButton = createButton(BossPage, "Steal Pos: NOT SET", Color3.fromRGB(100, 100, 100), 25)
+    StealPosButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            self.BossData.Tomb.StealPosition = hrp.CFrame
+            print("[Boss] Steal position set")
+            self:updateGUI()
+        end
+    end)
+    
+    local BossPosButton = createButton(BossPage, "Boss Pos: NOT SET", Color3.fromRGB(100, 100, 100), 25)
+    BossPosButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            self.BossData.Tomb.BossPosition = hrp.CFrame
+            print("[Boss] Boss fight position set")
+            self:updateGUI()
+        end
+    end)
+    
+    local ClearBossPosButton = createButton(BossPage, "Clear All Positions", Color3.fromRGB(220, 120, 0), 25)
+    ClearBossPosButton.MouseButton1Click:Connect(function()
+        self.BossData.Tomb.StandPosition = nil
+        self.BossData.Tomb.StealPosition = nil
+        self.BossData.Tomb.BossPosition = nil
+        print("[Boss] All positions cleared")
+        self:updateGUI()
+    end)
+
+    Pages["Bosses"] = BossPage
 
     -- Store GUI references
     self.MainGui = {
@@ -1461,7 +1966,11 @@ function MultiGrinder:setupGUI()
             AutoIgnoreButton = AutoIgnoreButton,
             TeleportOnRespawnButton = TeleportOnRespawnButton,
             AutoBlockButton = AutoBlockButton,
-            SpecialAttackButton = SpecialAttackButton, -- ADDED
+            SpecialAttackButton = SpecialAttackButton,
+            SafeDistanceToggle = SafeDistanceToggle,
+            CombatDistanceInput = CombatDistanceInput,
+            MiningDistanceInput = MiningDistanceInput,
+            MiningHitboxToggle = MiningHitboxToggle,
             SaveSettingsButton = SaveSettingsButton,
             ResetSettingsButton = ResetSettingsButton
         },
@@ -1484,6 +1993,15 @@ function MultiGrinder:setupGUI()
             MiningPriorityAreaCountLabel = MiningPriorityAreaCountLabel,
             MiningPriorityRadiusInput = MPriorityRadiusInput,
             MiningPriorityScanTimeInput = MPriorityScanTimeInput,
+        },
+        BossPage = {
+            BossToggleButton = BossToggleButton,
+            BossLoopButton = BossLoopButton,
+            StatusLabel = StatusLabel,
+            StandPosButton = StandPosButton,
+            StealPosButton = StealPosButton,
+            BossPosButton = BossPosButton,
+            BossTargetInput = BossTargetInput,
         }
     }
 
@@ -1496,7 +2014,7 @@ function MultiGrinder:setupGUI()
         if self.LoopThread then 
             task.cancel(self.LoopThread) 
         end
-        self:StopSpecialAttack() -- ADDED: Stop special attack on close
+        self:StopSpecialAttack()
         restoreCamera(self)
         ScreenGui:Destroy()
     end)
@@ -1521,6 +2039,17 @@ function MultiGrinder:start()
             if self.Enabled then
                 local hrp = self:getHumanoidRootPart()
                 if hrp then
+                    -- Check if boss mode is active
+                    if self.BossEnabled then
+                        local bossActive = self:executeBossSequence()
+                        if bossActive then
+                            -- Boss sequence is running (Stand/Steal/Fight phases)
+                            continue
+                        end
+                        -- If bossActive is false, we're in cooldown or idle, do normal farming below
+                    end
+                    
+                    -- Normal farming (runs during boss cooldown or when boss is disabled)
                     if self.Mode == "Combat" then
                         self:executeCombatAction(hrp)
                     elseif self.Mode == "Mining" then
