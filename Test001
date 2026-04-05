@@ -8,21 +8,23 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
 local Camera = Workspace.CurrentCamera
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local RunService = game:GetService("RunService")
 
 local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
 -- CONFIGURATION
 local CONFIG = {
-    ScriptName = "Studlands (Boss Edition)",
+    ScriptName = "Studlands (Full Edition)",
     DefaultMode = "Combat", 
     FarmSpeed = 0.25,
     SpecialAttackCooldown = 0.01,
+    FlySpeed = 50,
     
     FrameWidth = 260, 
     TitleBarHeight = 35, 
     TabBarHeight = 30, 
-    ContentAreaHeight = 300,
+    ContentAreaHeight = 360, -- Increased for new buttons
     MainFrameCornerRadius = 10,
     ButtonHeight = 30, 
     ButtonCornerRadius = 8,
@@ -37,6 +39,7 @@ local CONFIG = {
     SpecialAttackColor = Color3.fromRGB(255, 100, 0),
     DistanceColor = Color3.fromRGB(100, 100, 255),
     BossColor = Color3.fromRGB(200, 50, 200),
+    MovementColor = Color3.fromRGB(255, 165, 0), -- Orange for movement
     InputBackgroundColor = Color3.fromRGB(50, 50, 60),
 
     CloseButtonBaseColor = Color3.fromRGB(200, 0, 0), 
@@ -166,6 +169,13 @@ function MultiGrinder:new()
         BossCurrentTarget = nil,
         BossFightStartTime = nil,
         
+        -- Movement
+        NoclipEnabled = false,
+        FlyEnabled = false,
+        FlyBodyGyro = nil,
+        FlyBodyVelocity = nil,
+        NoclipConnection = nil,
+        
     }, MultiGrinder)
 
     self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
@@ -179,6 +189,11 @@ function MultiGrinder:new()
             if newHrp then
                 newHrp.CFrame = CFrame.new(self.LastKnownPosition)
             end
+        end
+        
+        -- Cleanup fly on respawn
+        if self.FlyEnabled then
+            self:ToggleFly(false)
         end
         
         self.EquippedToolName = nil 
@@ -241,6 +256,116 @@ end
 
 function MultiGrinder:StopSpecialAttack()
     self.SpecialAttackEnabled = false
+end
+
+-- NOCLIP FUNCTIONALITY
+function MultiGrinder:ToggleNoclip(enabled)
+    self.NoclipEnabled = enabled
+    
+    if enabled then
+        self.NoclipConnection = RunService.Stepped:Connect(function()
+            if not self.NoclipEnabled then return end
+            local char = LocalPlayer.Character
+            if char then
+                for _, part in pairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    else
+        if self.NoclipConnection then
+            self.NoclipConnection:Disconnect()
+            self.NoclipConnection = nil
+        end
+        -- Restore collision
+        local char = LocalPlayer.Character
+        if char then
+            for _, part in pairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+end
+
+-- FLY FUNCTIONALITY
+function MultiGrinder:ToggleFly(enabled)
+    self.FlyEnabled = enabled
+    
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    if enabled then
+        -- Create BodyGyro and BodyVelocity
+        self.FlyBodyGyro = Instance.new("BodyGyro")
+        self.FlyBodyGyro.P = 9e4
+        self.FlyBodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        self.FlyBodyGyro.CFrame = hrp.CFrame
+        self.FlyBodyGyro.Parent = hrp
+        
+        self.FlyBodyVelocity = Instance.new("BodyVelocity")
+        self.FlyBodyVelocity.Velocity = Vector3.new(0, 0, 0)
+        self.FlyBodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        self.FlyBodyVelocity.Parent = hrp
+        
+        -- Start fly loop
+        task.spawn(function()
+            while self.FlyEnabled and self.FlyBodyGyro and self.FlyBodyVelocity do
+                local currentCamera = Workspace.CurrentCamera
+                local moveDirection = Vector3.new(0, 0, 0)
+                
+                -- Input handling
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+                    moveDirection = moveDirection + currentCamera.CFrame.LookVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+                    moveDirection = moveDirection - currentCamera.CFrame.LookVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+                    moveDirection = moveDirection - currentCamera.CFrame.RightVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+                    moveDirection = moveDirection + currentCamera.CFrame.RightVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+                    moveDirection = moveDirection + Vector3.new(0, 1, 0)
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+                    moveDirection = moveDirection - Vector3.new(0, 1, 0)
+                end
+                
+                -- Apply movement
+                if moveDirection.Magnitude > 0 then
+                    moveDirection = moveDirection.Unit * CONFIG.FlySpeed
+                end
+                
+                if self.FlyBodyVelocity then
+                    self.FlyBodyVelocity.Velocity = moveDirection
+                end
+                if self.FlyBodyGyro then
+                    self.FlyBodyGyro.CFrame = currentCamera.CFrame
+                end
+                
+                task.wait(0.01)
+            end
+        end)
+    else
+        -- Cleanup fly parts
+        if self.FlyBodyGyro then
+            self.FlyBodyGyro:Destroy()
+            self.FlyBodyGyro = nil
+        end
+        if self.FlyBodyVelocity then
+            self.FlyBodyVelocity:Destroy()
+            self.FlyBodyVelocity = nil
+        end
+    end
 end
 
 function MultiGrinder:getHumanoidRootPart()
@@ -973,6 +1098,8 @@ function MultiGrinder:SaveSettings()
         BossEnabled = self.BossEnabled,
         BossLoopEnabled = self.BossLoopEnabled,
         BossData = self.BossData,
+        NoclipEnabled = self.NoclipEnabled,
+        FlyEnabled = self.FlyEnabled,
         PriorityAreas = {},
         MiningPriorityAreas = {},
         UIPos = {}
@@ -1045,6 +1172,20 @@ function MultiGrinder:LoadSettings()
     
     self.BossEnabled = settings.BossEnabled == true
     self.BossLoopEnabled = settings.BossLoopEnabled == true
+    
+    -- Load movement settings but don't auto-enable (for safety)
+    if settings.NoclipEnabled then
+        task.delay(1, function()
+            self:ToggleNoclip(true)
+            self:updateGUI()
+        end)
+    end
+    if settings.FlyEnabled then
+        task.delay(1, function()
+            self:ToggleFly(true)
+            self:updateGUI()
+        end)
+    end
 
     if settings.PriorityAreas then
         self.PriorityAreas = {}
@@ -1112,6 +1253,14 @@ function MultiGrinder:ResetSettings()
     self.BossEnabled = false
     self.BossLoopEnabled = false
     self.BossSequenceState = "Idle"
+    
+    -- Disable movement
+    if self.NoclipEnabled then
+        self:ToggleNoclip(false)
+    end
+    if self.FlyEnabled then
+        self:ToggleFly(false)
+    end
     
     self.PriorityAreas = {}
     self.MiningPriorityAreas = {}
@@ -1225,6 +1374,13 @@ function MultiGrinder:updateGUI()
     local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
     local modeDisplayName = (self.Mode == "Combat") and "Attacking" or "Mining"
     generalPage.ModeButton.Text = modeDisplayName .. " ("..currentToolName..")"
+    
+    -- Update Noclip and Fly buttons
+    generalPage.NoclipButton.Text = self.NoclipEnabled and "NOCLIP: ON" or "NOCLIP: OFF"
+    generalPage.NoclipButton.BackgroundColor3 = self.NoclipEnabled and CONFIG.MovementColor or CONFIG.ToggleOffColor
+    
+    generalPage.FlyButton.Text = self.FlyEnabled and "FLY: ON" or "FLY: OFF"
+    generalPage.FlyButton.BackgroundColor3 = self.FlyEnabled and CONFIG.MovementColor or CONFIG.ToggleOffColor
     
     combatPage.PriorityAreaToggleButton.Text = self.PriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
     combatPage.PriorityAreaToggleButton.BackgroundColor3 = self.PriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
@@ -1622,6 +1778,20 @@ function MultiGrinder:setupGUI()
         self:updateGUI()
     end)
     
+    -- NOCLIP BUTTON
+    local NoclipButton = createButton(GeneralPage, "NOCLIP: OFF", CONFIG.ToggleOffColor)
+    NoclipButton.MouseButton1Click:Connect(function()
+        self:ToggleNoclip(not self.NoclipEnabled)
+        self:updateGUI()
+    end)
+    
+    -- FLY BUTTON
+    local FlyButton = createButton(GeneralPage, "FLY: OFF", CONFIG.ToggleOffColor)
+    FlyButton.MouseButton1Click:Connect(function()
+        self:ToggleFly(not self.FlyEnabled)
+        self:updateGUI()
+    end)
+    
     createInputLabel(GeneralPage, "Combat Safe Distance (studs):")
     local CombatDistanceInput = createTextBox(GeneralPage, tostring(self.CombatSafeDistance), "E.g., 10 (safe range)")
     CombatDistanceInput.FocusLost:Connect(function()
@@ -1949,6 +2119,8 @@ function MultiGrinder:setupGUI()
             AutoBlockButton = AutoBlockButton,
             SpecialAttackButton = SpecialAttackButton,
             SafeDistanceToggle = SafeDistanceToggle,
+            NoclipButton = NoclipButton, -- Added
+            FlyButton = FlyButton, -- Added
             CombatDistanceInput = CombatDistanceInput,
             MiningDistanceInput = MiningDistanceInput,
             MiningHitboxToggle = MiningHitboxToggle,
@@ -1996,6 +2168,13 @@ function MultiGrinder:setupGUI()
             task.cancel(self.LoopThread) 
         end
         self:StopSpecialAttack()
+        -- Cleanup movement
+        if self.NoclipEnabled then
+            self:ToggleNoclip(false)
+        end
+        if self.FlyEnabled then
+            self:ToggleFly(false)
+        end
         restoreCamera(self)
         ScreenGui:Destroy()
     end)
