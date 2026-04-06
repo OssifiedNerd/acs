@@ -7,45 +7,51 @@ local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
 local Camera = Workspace.CurrentCamera
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local RunService = game:GetService("RunService")
 
 local MultiGrinder = {}
 MultiGrinder.__index = MultiGrinder
 
--- CONFIGURATION
+-- CONFIGURATION - Modern Dark Theme
 local CONFIG = {
-    ScriptName = "Studlands (Safe Distance Edition)",
+    ScriptName = "Studlands Grinder",
     DefaultMode = "Combat", 
     FarmSpeed = 0.25,
     SpecialAttackCooldown = 0.01,
+    FlySpeed = 50,
     
-    FrameWidth = 260, 
-    TitleBarHeight = 35, 
-    TabBarHeight = 30, 
-    ContentAreaHeight = 260, -- Increased for new UI elements
-    MainFrameCornerRadius = 10,
-    ButtonHeight = 30, 
+    FrameWidth = 280, 
+    TitleBarHeight = 40, 
+    TabBarHeight = 35, 
+    ContentAreaHeight = 400,
+    MainFrameCornerRadius = 12,
+    ButtonHeight = 32, 
     ButtonCornerRadius = 8,
-    InputHeight = 30,
+    InputHeight = 32,
+    SectionSpacing = 15,
 
-    BackgroundColor = Color3.fromRGB(35, 35, 45), 
-    TitleBarColor = Color3.fromRGB(30, 30, 40), 
-    TabBarColor = Color3.fromRGB(40, 40, 50), 
-    AccentColor = Color3.fromRGB(0, 100, 200), 
-    ToggleOnColor = Color3.fromRGB(0, 180, 0), 
-    ToggleOffColor = Color3.fromRGB(180, 0, 0), 
-    SpecialAttackColor = Color3.fromRGB(255, 100, 0),
-    DistanceColor = Color3.fromRGB(100, 100, 255), -- Blue for distance features
-    InputBackgroundColor = Color3.fromRGB(50, 50, 60),
+    -- Modern Color Palette
+    BackgroundColor = Color3.fromRGB(22, 22, 30), 
+    TitleBarColor = Color3.fromRGB(30, 30, 42), 
+    TabBarColor = Color3.fromRGB(28, 28, 38), 
+    AccentColor = Color3.fromRGB(0, 170, 255), 
+    ToggleOnColor = Color3.fromRGB(0, 200, 100), 
+    ToggleOffColor = Color3.fromRGB(200, 60, 60), 
+    SpecialAttackColor = Color3.fromRGB(255, 150, 0),
+    DistanceColor = Color3.fromRGB(100, 150, 255),
+    InputBackgroundColor = Color3.fromRGB(35, 35, 48),
+    SectionHeaderColor = Color3.fromRGB(150, 150, 170),
 
-    CloseButtonBaseColor = Color3.fromRGB(200, 0, 0), 
-    CloseButtonHoverColor = Color3.fromRGB(220, 0, 0), 
-    MinimizeButtonBaseColor = Color3.fromRGB(90, 90, 110), 
-    MinimizeButtonHoverColor = Color3.fromRGB(120, 120, 140), 
+    CloseButtonBaseColor = Color3.fromRGB(200, 60, 60), 
+    CloseButtonHoverColor = Color3.fromRGB(220, 80, 80), 
+    MinimizeButtonBaseColor = Color3.fromRGB(80, 80, 100), 
+    MinimizeButtonHoverColor = Color3.fromRGB(110, 110, 130), 
 
     Combat = {
         ToolName = "Unstable Cylindery Hammer", 
         TargetNames = {"Crab Champion"}, 
-        TeleportOffset = Vector3.new(0, 5, 5), -- Fallback if safe distance off
+        TeleportOffset = Vector3.new(0, 5, 5),
         CombatPriorityAreaScanRadius = 50, 
         CombatPriorityAreaScanTime = 3,
     },
@@ -53,10 +59,10 @@ local CONFIG = {
     Mining = {
         ToolName = "Eternium Pickaxe",
         TargetNames = {"Ore"},
-        TeleportOffset = Vector3.new(0, 3, 2), -- Fallback if safe distance off
+        TeleportOffset = Vector3.new(0, 3, 2),
         MiningPriorityAreaScanRadius = 30, 
         MiningPriorityAreaScanTime = 3,
-    },
+    }
 }
 
 local function getRemotes()
@@ -95,7 +101,7 @@ function MultiGrinder:new()
         MiningTargetNames = table.concat(CONFIG.Mining.TargetNames, ", "),
         
         OriginalCameraCFrame = nil, 
-        IgnoredTargets = setmetatable({}, {__mode = "k"}),
+        IgnoredTargets = {},
         TargetAcquiredTime = nil, 
         AutoIgnoreEnabled = true, 
         
@@ -103,15 +109,13 @@ function MultiGrinder:new()
         TeleportOnRespawnEnabled = true,
         AutoBlockEnabled = false,
         
-        -- Special Attack
         SpecialAttackEnabled = false,
         SpecialAttackThread = nil,
         
-        -- ADDED: Safe Distance System
         SafeDistanceEnabled = false,
-        CombatSafeDistance = 10, -- studs away from enemy (safe range)
-        MiningSafeDistance = 1,  -- studs away from ore (very close/inside for hitbox),
-        MiningHitboxMode = false, -- Attempts to mine from multiple angles rapidly if true
+        CombatSafeDistance = 10,
+        MiningSafeDistance = 1,
+        MiningHitboxMode = false,
 
         PriorityAreas = {}, 
         PriorityAreaEnabled = false,
@@ -132,13 +136,19 @@ function MultiGrinder:new()
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
         IsMinimized = false,
         
-        -- Anti-lag optimizations
         TargetCache = {},
         LastSearchTime = 0,
         SearchCooldown = 0.3,
         LastAttackTime = 0,
         AttackCooldown = 0.1,
-        LastMiningAngle = 0, -- For mining hitbox mode rotation
+        LastMiningAngle = 0,
+        
+        -- Movement
+        NoclipEnabled = false,
+        FlyEnabled = false,
+        FlyBodyGyro = nil,
+        FlyBodyVelocity = nil,
+        NoclipConnection = nil,
         
     }, MultiGrinder)
 
@@ -153,6 +163,18 @@ function MultiGrinder:new()
             if newHrp then
                 newHrp.CFrame = CFrame.new(self.LastKnownPosition)
             end
+        end
+        
+        -- Re-enable movement features if they were active
+        if self.NoclipEnabled then
+            task.delay(0.5, function()
+                self:ToggleNoclip(true)
+            end)
+        end
+        if self.FlyEnabled then
+            task.delay(0.5, function()
+                self:ToggleFly(true)
+            end)
         end
         
         self.EquippedToolName = nil 
@@ -184,7 +206,7 @@ function MultiGrinder:StartSpecialAttack()
     if self.SpecialAttackThread then return end
     
     self.SpecialAttackThread = task.spawn(function()
-        while self.SpecialAttackEnabled and self.Enabled do
+        while self.SpecialAttackEnabled do  -- Removed 'and self.Enabled' to make it independent
             local success, err = pcall(function()
                 local char = LocalPlayer.Character
                 if not char then return end
@@ -217,6 +239,116 @@ function MultiGrinder:StopSpecialAttack()
     self.SpecialAttackEnabled = false
 end
 
+-- NOCLIP FUNCTIONALITY
+function MultiGrinder:ToggleNoclip(enabled)
+    self.NoclipEnabled = enabled
+    
+    if enabled then
+        self.NoclipConnection = RunService.Stepped:Connect(function()
+            if not self.NoclipEnabled then return end
+            local char = LocalPlayer.Character
+            if char then
+                for _, part in pairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    else
+        if self.NoclipConnection then
+            self.NoclipConnection:Disconnect()
+            self.NoclipConnection = nil
+        end
+        -- Restore collision
+        local char = LocalPlayer.Character
+        if char then
+            for _, part in pairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+end
+
+-- FLY FUNCTIONALITY
+function MultiGrinder:ToggleFly(enabled)
+    self.FlyEnabled = enabled
+    
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    if enabled then
+        -- Create BodyGyro and BodyVelocity
+        self.FlyBodyGyro = Instance.new("BodyGyro")
+        self.FlyBodyGyro.P = 9e4
+        self.FlyBodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        self.FlyBodyGyro.CFrame = hrp.CFrame
+        self.FlyBodyGyro.Parent = hrp
+        
+        self.FlyBodyVelocity = Instance.new("BodyVelocity")
+        self.FlyBodyVelocity.Velocity = Vector3.new(0, 0, 0)
+        self.FlyBodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        self.FlyBodyVelocity.Parent = hrp
+        
+        -- Start fly loop
+        task.spawn(function()
+            while self.FlyEnabled and self.FlyBodyGyro and self.FlyBodyVelocity do
+                local currentCamera = Workspace.CurrentCamera
+                local moveDirection = Vector3.new(0, 0, 0)
+                
+                -- Input handling
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+                    moveDirection = moveDirection + currentCamera.CFrame.LookVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+                    moveDirection = moveDirection - currentCamera.CFrame.LookVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+                    moveDirection = moveDirection - currentCamera.CFrame.RightVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+                    moveDirection = moveDirection + currentCamera.CFrame.RightVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+                    moveDirection = moveDirection + Vector3.new(0, 1, 0)
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+                    moveDirection = moveDirection - Vector3.new(0, 1, 0)
+                end
+                
+                -- Apply movement
+                if moveDirection.Magnitude > 0 then
+                    moveDirection = moveDirection.Unit * CONFIG.FlySpeed
+                end
+                
+                if self.FlyBodyVelocity then
+                    self.FlyBodyVelocity.Velocity = moveDirection
+                end
+                if self.FlyBodyGyro then
+                    self.FlyBodyGyro.CFrame = currentCamera.CFrame
+                end
+                
+                task.wait(0.01)
+            end
+        end)
+    else
+        -- Cleanup fly parts
+        if self.FlyBodyGyro then
+            self.FlyBodyGyro:Destroy()
+            self.FlyBodyGyro = nil
+        end
+        if self.FlyBodyVelocity then
+            self.FlyBodyVelocity:Destroy()
+            self.FlyBodyVelocity = nil
+        end
+    end
+end
+
 function MultiGrinder:getHumanoidRootPart()
     local char = LocalPlayer.Character
     if not char then return nil end
@@ -245,13 +377,20 @@ function MultiGrinder:findClosestTarget(position, names)
     local closestTargetKey = nil 
     local minDistance = math.huge
     
-    local children = Workspace:GetChildren()
-    for _, obj in ipairs(children) do
+    local descendants = Workspace:GetDescendants()
+    for _, obj in ipairs(descendants) do
         for _, name in ipairs(names) do
             if string.find(string.lower(obj.Name), string.lower(name)) then
                 local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
                 if targetPart and targetPart.Parent ~= LocalPlayer.Character then
-                    local targetKey = targetPart.Parent:FindFirstChildOfClass("Humanoid") and targetPart.Parent or targetPart
+                    local parent = targetPart.Parent
+                    local humanoid = parent:FindFirstChildOfClass("Humanoid")
+                    
+                    if humanoid and humanoid.Health <= 0 then
+                        continue
+                    end
+                    
+                    local targetKey = humanoid and parent or targetPart
                     
                     if not self.IgnoredTargets[targetKey] then
                         local dist = (targetPart.Position - position).Magnitude
@@ -366,6 +505,12 @@ function MultiGrinder:equipTool(toolName)
     return false
 end
 
+function MultiGrinder:holdKey(keyCode, duration)
+    VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+    task.wait(duration)
+    VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+end
+
 local function restoreCamera(self)
     if self.OriginalCameraCFrame then 
         Camera.CFrame = self.OriginalCameraCFrame 
@@ -373,37 +518,30 @@ local function restoreCamera(self)
     end
 end
 
--- ADDED: Calculate safe position with distance
 function MultiGrinder:calculateTeleportPosition(targetPosition, currentPosition, mode)
     if not self.SafeDistanceEnabled then
-        -- Use legacy offset system
         local offset = (mode == "Combat") and CONFIG.Combat.TeleportOffset or CONFIG.Mining.TeleportOffset
         return targetPosition + offset
     end
     
     if mode == "Combat" then
-        -- Calculate direction away from target to maintain safe distance
         local direction = (currentPosition - targetPosition)
-        direction = Vector3.new(direction.X, 0, direction.Z) -- Keep horizontal only
+        direction = Vector3.new(direction.X, 0, direction.Z)
         
         if direction.Magnitude < 0.1 then
-            -- If directly on top, pick random direction
             direction = Vector3.new(math.random(-100, 100), 0, math.random(-100, 100))
         end
         
         direction = direction.Unit
         local safePosition = targetPosition + (direction * self.CombatSafeDistance)
-        safePosition = safePosition + Vector3.new(0, 5, 0) -- Keep height offset
+        safePosition = safePosition + Vector3.new(0, 5, 0)
         
         return safePosition
     else
-        -- Mining mode: Get very close or inside
-        -- If MiningHitboxMode is enabled, we rotate around the ore slightly each hit
         local baseDistance = self.MiningSafeDistance
         local heightOffset = 3
         
         if self.MiningHitboxMode then
-            -- Rotate angle slightly each time to hit from different sides (simulates larger hitbox)
             self.LastMiningAngle = self.LastMiningAngle + 45
             if self.LastMiningAngle >= 360 then self.LastMiningAngle = 0 end
             
@@ -413,7 +551,6 @@ function MultiGrinder:calculateTeleportPosition(targetPosition, currentPosition,
             
             return targetPosition + Vector3.new(offsetX, heightOffset, offsetZ)
         else
-            -- Standard close mining
             local direction = (currentPosition - targetPosition)
             direction = Vector3.new(direction.X, 0, direction.Z)
             
@@ -454,6 +591,7 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
             self.CurrentTargetIdentifier = newTargetKey 
             target = self.PriorityAreaTarget
             self.PriorityAreaScanTimer = 0 
+            self.TargetAcquiredTime = tick()
             self:updateGUI()
         else
             self.PriorityAreaScanTimer = self.PriorityAreaScanTimer + CONFIG.FarmSpeed
@@ -472,7 +610,6 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
         end
     end
 
-    -- ADDED: Use new distance calculation
     local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
     
     self.LastKnownPosition = hrp.Position 
@@ -494,7 +631,6 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        -- Look at target from safe distance
         Camera.CFrame = CFrame.new(targetPos, target.Position)
         
         self:simulateAction(equippedTool)
@@ -541,11 +677,12 @@ function MultiGrinder:executeCombatAction(hrp)
         self:updateGUI() 
     end
     
-    if self.AutoIgnoreEnabled and target and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
+    if self.AutoIgnoreEnabled and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
         local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
-        if humanoid and humanoid.Health > 0 then
+        if humanoid and humanoid.Health > 0 and humanoid.Health == humanoid.MaxHealth then
             if self.CurrentTargetIdentifier then
                 self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+                print("[Multi-Bot] Auto-ignored stuck mob:", self.CurrentTargetIdentifier.Name)
             end
             
             self.CurrentTarget = nil 
@@ -554,9 +691,8 @@ function MultiGrinder:executeCombatAction(hrp)
             restoreCamera(self)
             self:updateGUI()
             return false 
-        else
-            self.TargetAcquiredTime = nil
         end
+        self.TargetAcquiredTime = tick() - 5
     end
     
     local char = LocalPlayer.Character
@@ -572,7 +708,6 @@ function MultiGrinder:executeCombatAction(hrp)
     
     if not equippedTool then return false end
     
-    -- ADDED: Use new distance calculation
     local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
     
     self.LastKnownPosition = hrp.Position
@@ -583,7 +718,6 @@ function MultiGrinder:executeCombatAction(hrp)
             self.OriginalCameraCFrame = Camera.CFrame 
         end
         
-        -- Face target from safe position
         Camera.CFrame = CFrame.new(targetPos, target.Position)
 
         self:simulateAction(equippedTool)
@@ -612,6 +746,7 @@ function MultiGrinder:executePriorityAreaMining(hrp)
     if not targetIsValid then
         self.MiningPriorityAreaTarget = nil
         self.CurrentTargetIdentifier = nil 
+        self.LastMiningAngle = 0
         
         local targetNames = self:getTargetNames("Mining")
         local newTarget, newTargetKey = self:findClosestResourceInArea(hrp.Position, self.MiningPriorityAreaScanRadius, targetNames)
@@ -639,7 +774,12 @@ function MultiGrinder:executePriorityAreaMining(hrp)
         end
     end
     
-    -- ADDED: Use new distance calculation (very close for mining)
+    if not target or not target.Parent then
+        self.MiningPriorityAreaTarget = nil
+        self.LastMiningAngle = 0
+        return false
+    end
+    
     local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Mining")
     
     self.LastKnownPosition = hrp.Position 
@@ -664,6 +804,10 @@ function MultiGrinder:executePriorityAreaMining(hrp)
         Camera.CFrame = CFrame.new(targetPos, target.Position)
 
         self:simulateAction(equippedTool)
+        
+        if not target.Parent then
+            self.LastMiningAngle = 0
+        end
     else
         restoreCamera(self) 
     end
@@ -688,12 +832,17 @@ function MultiGrinder:executeMiningAction(hrp)
     local needsNewTarget = not resource or not resource.Parent
 
     if needsNewTarget then
+        if self.CurrentTarget then
+            self.LastMiningAngle = 0
+        end
+        
         local targetNames = self:getTargetNames("Mining")
         local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
         
         if not newResource then 
             self.CurrentTarget = nil
             self.CurrentTargetIdentifier = nil 
+            self.LastMiningAngle = 0
             restoreCamera(self) 
             self:updateGUI() 
             return false 
@@ -702,7 +851,14 @@ function MultiGrinder:executeMiningAction(hrp)
         self.CurrentTarget = newResource
         self.CurrentTargetIdentifier = newResourceKey 
         resource = self.CurrentTarget
+        self.LastMiningAngle = 0
         self:updateGUI() 
+    end
+    
+    if not resource or not resource.Parent then
+        self.CurrentTarget = nil
+        self.LastMiningAngle = 0
+        return false
     end
     
     local char = LocalPlayer.Character
@@ -718,7 +874,6 @@ function MultiGrinder:executeMiningAction(hrp)
     
     if not equippedTool then return false end
     
-    -- ADDED: Use new distance calculation (very close for mining)
     local targetPos = self:calculateTeleportPosition(resource.Position, hrp.Position, "Mining")
     
     self.LastKnownPosition = hrp.Position
@@ -732,6 +887,10 @@ function MultiGrinder:executeMiningAction(hrp)
         Camera.CFrame = CFrame.new(targetPos, resource.Position)
         
         self:simulateAction(equippedTool)
+        
+        if not resource.Parent then
+            self.LastMiningAngle = 0
+        end
     else
         restoreCamera(self) 
     end
@@ -755,11 +914,12 @@ function MultiGrinder:SaveSettings()
         TeleportOnRespawnEnabled = self.TeleportOnRespawnEnabled,
         AutoBlockEnabled = self.AutoBlockEnabled,
         SpecialAttackEnabled = self.SpecialAttackEnabled,
-        -- ADDED: Distance settings
         SafeDistanceEnabled = self.SafeDistanceEnabled,
         CombatSafeDistance = self.CombatSafeDistance,
         MiningSafeDistance = self.MiningSafeDistance,
         MiningHitboxMode = self.MiningHitboxMode,
+        NoclipEnabled = self.NoclipEnabled,
+        FlyEnabled = self.FlyEnabled,
         PriorityAreas = {},
         MiningPriorityAreas = {},
         UIPos = {}
@@ -816,11 +976,24 @@ function MultiGrinder:LoadSettings()
     self.AutoBlockEnabled = settings.AutoBlockEnabled == true
     self.SpecialAttackEnabled = settings.SpecialAttackEnabled == true
     
-    -- ADDED: Load distance settings
     self.SafeDistanceEnabled = settings.SafeDistanceEnabled == true
     self.CombatSafeDistance = settings.CombatSafeDistance or 10
     self.MiningSafeDistance = settings.MiningSafeDistance or 1
     self.MiningHitboxMode = settings.MiningHitboxMode == true
+    
+    -- Load movement settings but don't auto-enable (for safety)
+    if settings.NoclipEnabled then
+        task.delay(1, function()
+            self:ToggleNoclip(true)
+            self:updateGUI()
+        end)
+    end
+    if settings.FlyEnabled then
+        task.delay(1, function()
+            self:ToggleFly(true)
+            self:updateGUI()
+        end)
+    end
 
     if settings.PriorityAreas then
         self.PriorityAreas = {}
@@ -864,14 +1037,22 @@ function MultiGrinder:ResetSettings()
     self.AutoBlockEnabled = false
     self.SpecialAttackEnabled = false
     
-    -- ADDED: Reset distance settings
     self.SafeDistanceEnabled = false
     self.CombatSafeDistance = 10
     self.MiningSafeDistance = 1
     self.MiningHitboxMode = false
     
+    -- Disable movement
+    if self.NoclipEnabled then
+        self:ToggleNoclip(false)
+    end
+    if self.FlyEnabled then
+        self:ToggleFly(false)
+    end
+    
     self.PriorityAreas = {}
     self.MiningPriorityAreas = {}
+    self.IgnoredTargets = {}
     
     self.UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2))
     if self.MainGui and self.MainGui.MainFrame then
@@ -891,7 +1072,6 @@ function MultiGrinder:ResetSettings()
         self.MainGui.MiningPage.MiningPriorityRadiusInput.Text = self.MiningPriorityAreaScanRadius
         self.MainGui.MiningPage.MiningPriorityScanTimeInput.Text = self.MiningPriorityAreaScanTime
         
-        -- ADDED: Reset distance UI
         self.MainGui.GeneralPage.SafeDistanceToggle.Text = "Safe Distance: OFF"
         self.MainGui.GeneralPage.SafeDistanceToggle.BackgroundColor3 = CONFIG.ToggleOffColor
         self.MainGui.GeneralPage.CombatDistanceInput.Text = tostring(self.CombatSafeDistance)
@@ -932,11 +1112,11 @@ function MultiGrinder:updateGUI()
     local miningPage = self.MainGui.MiningPage
     
     if self.Enabled then
-        generalPage.ToggleButton.Text = "ON"
+        generalPage.ToggleButton.Text = "GRINDER: ON"
         generalPage.ToggleButton.BackgroundColor3 = CONFIG.ToggleOnColor
         generalPage.IgnoreButton.Visible = true
     else
-        generalPage.ToggleButton.Text = "OFF"
+        generalPage.ToggleButton.Text = "GRINDER: OFF"
         generalPage.ToggleButton.BackgroundColor3 = CONFIG.ToggleOffColor
         generalPage.IgnoreButton.Visible = false
     end
@@ -951,7 +1131,7 @@ function MultiGrinder:updateGUI()
         end
     end
 
-    generalPage.AutoIgnoreButton.Text = self.AutoIgnoreEnabled and "10s Auto-Ignore: ON" or "10s Auto-Ignore: OFF"
+    generalPage.AutoIgnoreButton.Text = self.AutoIgnoreEnabled and "Auto-Ignore: ON" or "Auto-Ignore: OFF"
     generalPage.AutoIgnoreButton.BackgroundColor3 = self.AutoIgnoreEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
 
     generalPage.TeleportOnRespawnButton.Text = self.TeleportOnRespawnEnabled and "TP on Respawn: ON" or "TP on Respawn: OFF"
@@ -960,10 +1140,9 @@ function MultiGrinder:updateGUI()
     generalPage.AutoBlockButton.Text = self.AutoBlockEnabled and "Auto-Block: ON" or "Auto-Block: OFF"
     generalPage.AutoBlockButton.BackgroundColor3 = self.AutoBlockEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
     
-    generalPage.SpecialAttackButton.Text = self.SpecialAttackEnabled and "SPECIAL ATTACK: ON" or "SPECIAL ATTACK: OFF"
+    generalPage.SpecialAttackButton.Text = self.SpecialAttackEnabled and "Special Attack: ON" or "Special Attack: OFF"
     generalPage.SpecialAttackButton.BackgroundColor3 = self.SpecialAttackEnabled and CONFIG.SpecialAttackColor or CONFIG.ToggleOffColor
     
-    -- ADDED: Distance UI updates
     generalPage.SafeDistanceToggle.Text = self.SafeDistanceEnabled and "Safe Distance: ON" or "Safe Distance: OFF"
     generalPage.SafeDistanceToggle.BackgroundColor3 = self.SafeDistanceEnabled and CONFIG.DistanceColor or CONFIG.ToggleOffColor
     
@@ -971,8 +1150,15 @@ function MultiGrinder:updateGUI()
     generalPage.MiningHitboxToggle.BackgroundColor3 = self.MiningHitboxMode and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
 
     local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolName
-    local modeDisplayName = (self.Mode == "Combat") and "Attacking" or "Mining"
+    local modeDisplayName = (self.Mode == "Combat") and "MODE: COMBAT" or "MODE: MINING"
     generalPage.ModeButton.Text = modeDisplayName .. " ("..currentToolName..")"
+    
+    -- Update Noclip and Fly buttons
+    generalPage.NoclipButton.Text = self.NoclipEnabled and "NOCLIP: ON" or "NOCLIP: OFF"
+    generalPage.NoclipButton.BackgroundColor3 = self.NoclipEnabled and Color3.fromRGB(255, 165, 0) or CONFIG.ToggleOffColor
+    
+    generalPage.FlyButton.Text = self.FlyEnabled and "FLY: ON" or "FLY: OFF"
+    generalPage.FlyButton.BackgroundColor3 = self.FlyEnabled and Color3.fromRGB(255, 165, 0) or CONFIG.ToggleOffColor
     
     combatPage.PriorityAreaToggleButton.Text = self.PriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
     combatPage.PriorityAreaToggleButton.BackgroundColor3 = self.PriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
@@ -986,9 +1172,11 @@ function MultiGrinder:updateGUI()
         if tabName == self.CurrentTab then
             tabButton.BackgroundColor3 = CONFIG.BackgroundColor 
             tabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+            tabButton.Font = Enum.Font.GothamBold
         else
             tabButton.BackgroundColor3 = CONFIG.TabBarColor 
             tabButton.TextColor3 = Color3.fromRGB(150, 150, 150)
+            tabButton.Font = Enum.Font.Gotham
         end
     end
 end
@@ -1011,19 +1199,40 @@ function MultiGrinder:showTab(tabName)
         task.wait()
         local layout = self.MainGui.Pages[tabName]:FindFirstChildOfClass("UIListLayout")
         if layout then
-            contentContainer.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10)
+            contentContainer.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 20)
         end
         contentContainer.CanvasPosition = Vector2.new(0,0)
     end
 end
 
+-- UI Creation Helpers
+local function createSectionHeader(parent, text)
+    local header = Instance.new("TextLabel")
+    header.Size = UDim2.new(0.9, 0, 0, 25)
+    header.Text = text
+    header.TextColor3 = CONFIG.SectionHeaderColor
+    header.Font = Enum.Font.GothamBold
+    header.TextSize = 14
+    header.BackgroundTransparency = 1
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.Parent = parent
+    
+    local line = Instance.new("Frame")
+    line.Size = UDim2.new(0.9, 0, 0, 1)
+    line.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+    line.BorderSizePixel = 0
+    line.Parent = parent
+    
+    return header
+end
+
 local function createInputLabel(parent, text)
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, 0, 0, 20)
+    label.Size = UDim2.new(0.9, 0, 0, 20)
     label.Text = text
-    label.TextColor3 = Color3.fromRGB(200, 200, 200)
+    label.TextColor3 = Color3.fromRGB(180, 180, 200)
     label.Font = Enum.Font.Gotham
-    label.TextSize = 14
+    label.TextSize = 13
     label.BackgroundTransparency = 1
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Parent = parent
@@ -1035,13 +1244,14 @@ local function createTextBox(parent, initialText, placeholder)
     textBox.Size = UDim2.new(0.9, 0, 0, CONFIG.InputHeight)
     textBox.Text = initialText
     textBox.PlaceholderText = placeholder or ""
-    textBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 120)
+    textBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 140)
     textBox.TextColor3 = Color3.fromRGB(255, 255, 255)
     textBox.BackgroundColor3 = CONFIG.InputBackgroundColor
     textBox.Font = Enum.Font.Gotham
     textBox.TextSize = 14
     textBox.Parent = parent
     textBox.BorderSizePixel = 0
+    textBox.ClearTextOnFocus = false
     Instance.new("UICorner", textBox).CornerRadius = UDim.new(0, CONFIG.ButtonCornerRadius)
     return textBox
 end
@@ -1056,13 +1266,14 @@ local function createButton(parent, text, color, height)
     button.TextColor3 = Color3.fromRGB(255, 255, 255)
     button.Parent = parent
     button.BorderSizePixel = 0
+    button.AutoButtonColor = true
     Instance.new("UICorner", button).CornerRadius = UDim.new(0, CONFIG.ButtonCornerRadius)
     return button
 end
 
 local function createListLayout(parent)
     local ListLayout = Instance.new("UIListLayout", parent)
-    ListLayout.Padding = UDim.new(0, 10) 
+    ListLayout.Padding = UDim.new(0, 8) 
     ListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
     ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
     ListLayout.FillDirection = Enum.FillDirection.Vertical
@@ -1094,10 +1305,25 @@ function MultiGrinder:setupGUI()
     MainFrame.Size = UDim2.new(0, CONFIG.FrameWidth, 0, self.InitialFrameHeight) 
     MainFrame.Position = self.UIPosition 
     MainFrame.BackgroundColor3 = CONFIG.BackgroundColor
-    MainFrame.BorderColor3 = Color3.fromRGB(15, 15, 20)
+    MainFrame.BorderColor3 = Color3.fromRGB(40, 40, 55)
     MainFrame.BorderSizePixel = 1
     MainFrame.Parent = ScreenGui
     Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, CONFIG.MainFrameCornerRadius)
+    
+    -- Shadow effect
+    local Shadow = Instance.new("ImageLabel")
+    Shadow.Name = "Shadow"
+    Shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+    Shadow.BackgroundTransparency = 1
+    Shadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+    Shadow.Size = UDim2.new(1, 40, 1, 40)
+    Shadow.ZIndex = -1
+    Shadow.Image = "rbxassetid://5554236805"
+    Shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+    Shadow.ImageTransparency = 0.6
+    Shadow.ScaleType = Enum.ScaleType.Slice
+    Shadow.SliceCenter = Rect.new(23, 23, 277, 277)
+    Shadow.Parent = MainFrame
     
     local TitleBar = Instance.new("Frame")
     TitleBar.Name = "TitleBar"
@@ -1105,10 +1331,11 @@ function MultiGrinder:setupGUI()
     TitleBar.BackgroundColor3 = CONFIG.TitleBarColor
     TitleBar.Parent = MainFrame
     TitleBar.BorderSizePixel = 0
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, CONFIG.MainFrameCornerRadius)
     
     local TitleLabel = Instance.new("TextLabel")
     TitleLabel.Name = "TitleLabel"
-    TitleLabel.Position = UDim2.new(0, 8, 0, 0)
+    TitleLabel.Position = UDim2.new(0, 15, 0, 0)
     TitleLabel.Size = UDim2.new(1, -70, 1, 0) 
     TitleLabel.Text = CONFIG.ScriptName 
     TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1119,7 +1346,7 @@ function MultiGrinder:setupGUI()
     TitleLabel.BackgroundTransparency = 1
     TitleLabel.Parent = TitleBar
     
-    local controlSize = CONFIG.TitleBarHeight - 18 
+    local controlSize = 24
     
     local function createControl(text, color, name, posX)
         local btn = Instance.new("TextButton")
@@ -1132,12 +1359,12 @@ function MultiGrinder:setupGUI()
         btn.Parent = TitleBar
         btn.BorderSizePixel = 0
         btn.Position = UDim2.new(1, posX, 0.5, -controlSize/2)
-        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
         return btn
     end
 
-    local CloseButton = createControl("X", CONFIG.CloseButtonBaseColor, "CloseButton", -30)
-    local MinimizeButton = createControl("-", CONFIG.MinimizeButtonBaseColor, "MinimizeButton", -60)
+    local CloseButton = createControl("×", CONFIG.CloseButtonBaseColor, "CloseButton", -35)
+    local MinimizeButton = createControl("−", CONFIG.MinimizeButtonBaseColor, "MinimizeButton", -65)
 
     MinimizeButton.MouseEnter:Connect(function()
         MinimizeButton.BackgroundColor3 = CONFIG.MinimizeButtonHoverColor
@@ -1152,6 +1379,7 @@ function MultiGrinder:setupGUI()
         CloseButton.BackgroundColor3 = CONFIG.CloseButtonBaseColor
     end)
     
+    -- Dragging
     local dragging = false
     local dragInput = nil
     local dragStart = nil
@@ -1227,7 +1455,7 @@ function MultiGrinder:setupGUI()
     ContentContainer.BorderSizePixel = 0
     ContentContainer.BackgroundTransparency = 1
     ContentContainer.ScrollBarImageColor3 = CONFIG.AccentColor
-    ContentContainer.ScrollBarThickness = 6
+    ContentContainer.ScrollBarThickness = 4
     ContentContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
     
     local Pages = {}
@@ -1235,9 +1463,11 @@ function MultiGrinder:setupGUI()
     -- GENERAL PAGE
     local GeneralPage = createContentPage(ContentContainer, "General")
     local GeneralLayout = createListLayout(GeneralPage)
-    GeneralLayout.Padding = UDim.new(0, 8) 
+    GeneralLayout.Padding = UDim.new(0, 10) 
     
-    local ToggleButton = createButton(GeneralPage, "OFF", CONFIG.ToggleOffColor) 
+    createSectionHeader(GeneralPage, "MAIN CONTROLS")
+    
+    local ToggleButton = createButton(GeneralPage, "GRINDER: OFF", CONFIG.ToggleOffColor, 36) 
     ToggleButton.MouseButton1Click:Connect(function()
         self.Enabled = not self.Enabled
         self.CurrentTarget = nil 
@@ -1250,12 +1480,9 @@ function MultiGrinder:setupGUI()
         self.MiningPriorityAreaTarget = nil
         self.MiningPriorityAreaScanTimer = 0
         self.CurrentMiningPriorityAreaIndex = 1
+        self.LastMiningAngle = 0
         
-        if not self.Enabled and self.SpecialAttackEnabled then
-            self:StopSpecialAttack()
-        elseif self.Enabled and self.SpecialAttackEnabled then
-            self:StartSpecialAttack()
-        end
+        -- Removed: Special attack no longer stops when turning off grinder
         
         if not self.Enabled then
             restoreCamera(self) 
@@ -1268,7 +1495,7 @@ function MultiGrinder:setupGUI()
         self:updateGUI()
     end)
 
-    local ModeButton = createButton(GeneralPage, "Mode", CONFIG.AccentColor)
+    local ModeButton = createButton(GeneralPage, "MODE: COMBAT", CONFIG.AccentColor, 36)
     ModeButton.MouseButton1Click:Connect(function()
         self.Mode = (self.Mode == "Combat" and "Mining" or "Combat")
         self.CurrentTarget = nil 
@@ -1277,26 +1504,32 @@ function MultiGrinder:setupGUI()
         self.TargetAcquiredTime = nil 
         self.PriorityAreaTarget = nil 
         self.MiningPriorityAreaTarget = nil
+        self.LastMiningAngle = 0
         restoreCamera(self)
         self:updateGUI()
     end)
 
+    createSectionHeader(GeneralPage, "TARGET OPTIONS")
+    
     local IgnoreButton = createButton(GeneralPage, "No Target", Color3.fromRGB(80, 80, 80))
     IgnoreButton.Visible = false 
     IgnoreButton.MouseButton1Click:Connect(function()
         if self.Enabled and self.CurrentTargetIdentifier then 
             self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+            print("[Multi-Bot] Manually ignored:", self.CurrentTargetIdentifier.Name)
             self.CurrentTarget = nil 
             self.CurrentTargetIdentifier = nil 
             self.TargetAcquiredTime = nil 
+            self.LastMiningAngle = 0
             restoreCamera(self)
             self:updateGUI()
         end
     end)
 
-    local ClearIgnoreButton = createButton(GeneralPage, "Clear Ignore List", Color3.fromRGB(220, 120, 0))
+    local ClearIgnoreButton = createButton(GeneralPage, "Clear Ignore List", Color3.fromRGB(200, 140, 0))
     ClearIgnoreButton.MouseButton1Click:Connect(function()
-        self.IgnoredTargets = setmetatable({}, {__mode = "k"})
+        self.IgnoredTargets = {}
+        print("[Multi-Bot] Ignore list cleared")
         if self.CurrentTargetIdentifier and self.IgnoredTargets[self.CurrentTargetIdentifier] then
             self.CurrentTarget = nil
             self.CurrentTargetIdentifier = nil
@@ -1305,12 +1538,14 @@ function MultiGrinder:setupGUI()
         self:updateGUI()
     end)
     
-    local AutoIgnoreButton = createButton(GeneralPage, "10s Auto-Ignore: ON", CONFIG.ToggleOnColor)
+    local AutoIgnoreButton = createButton(GeneralPage, "Auto-Ignore: ON", CONFIG.ToggleOnColor)
     AutoIgnoreButton.MouseButton1Click:Connect(function()
         self.AutoIgnoreEnabled = not self.AutoIgnoreEnabled
         self:updateGUI()
     end)
 
+    createSectionHeader(GeneralPage, "UTILITY")
+    
     local TeleportOnRespawnButton = createButton(GeneralPage, "TP on Respawn: ON", CONFIG.ToggleOnColor)
     TeleportOnRespawnButton.MouseButton1Click:Connect(function()
         self.TeleportOnRespawnEnabled = not self.TeleportOnRespawnEnabled
@@ -1323,11 +1558,11 @@ function MultiGrinder:setupGUI()
         self:updateGUI()
     end)
 
-    local SpecialAttackButton = createButton(GeneralPage, "SPECIAL ATTACK: OFF", CONFIG.ToggleOffColor)
+    local SpecialAttackButton = createButton(GeneralPage, "Special Attack: OFF", CONFIG.ToggleOffColor)
     SpecialAttackButton.MouseButton1Click:Connect(function()
         self.SpecialAttackEnabled = not self.SpecialAttackEnabled
         
-        if self.SpecialAttackEnabled and self.Enabled then
+        if self.SpecialAttackEnabled then  -- Removed 'and self.Enabled' check
             self:StartSpecialAttack()
         else
             self:StopSpecialAttack()
@@ -1336,16 +1571,32 @@ function MultiGrinder:setupGUI()
         self:updateGUI()
     end)
 
-    -- ADDED: Safe Distance Toggle (Blue)
+    createSectionHeader(GeneralPage, "MOVEMENT")
+    
+    -- NOCLIP BUTTON
+    local NoclipButton = createButton(GeneralPage, "NOCLIP: OFF", CONFIG.ToggleOffColor)
+    NoclipButton.MouseButton1Click:Connect(function()
+        self:ToggleNoclip(not self.NoclipEnabled)
+        self:updateGUI()
+    end)
+    
+    -- FLY BUTTON
+    local FlyButton = createButton(GeneralPage, "FLY: OFF", CONFIG.ToggleOffColor)
+    FlyButton.MouseButton1Click:Connect(function()
+        self:ToggleFly(not self.FlyEnabled)
+        self:updateGUI()
+    end)
+    
+    createSectionHeader(GeneralPage, "DISTANCE SETTINGS")
+    
     local SafeDistanceToggle = createButton(GeneralPage, "Safe Distance: OFF", CONFIG.ToggleOffColor)
     SafeDistanceToggle.MouseButton1Click:Connect(function()
         self.SafeDistanceEnabled = not self.SafeDistanceEnabled
         self:updateGUI()
     end)
     
-    -- ADDED: Combat Distance Input
     createInputLabel(GeneralPage, "Combat Safe Distance (studs):")
-    local CombatDistanceInput = createTextBox(GeneralPage, tostring(self.CombatSafeDistance), "E.g., 10 (safe range)")
+    local CombatDistanceInput = createTextBox(GeneralPage, tostring(self.CombatSafeDistance), "E.g., 10")
     CombatDistanceInput.FocusLost:Connect(function()
         local dist = tonumber(CombatDistanceInput.Text)
         if dist and dist >= 0 then
@@ -1355,9 +1606,8 @@ function MultiGrinder:setupGUI()
         end
     end)
     
-    -- ADDED: Mining Distance Input
     createInputLabel(GeneralPage, "Mining Distance (studs):")
-    local MiningDistanceInput = createTextBox(GeneralPage, tostring(self.MiningSafeDistance), "E.g., 1 (very close)")
+    local MiningDistanceInput = createTextBox(GeneralPage, tostring(self.MiningSafeDistance), "E.g., 1")
     MiningDistanceInput.FocusLost:Connect(function()
         local dist = tonumber(MiningDistanceInput.Text)
         if dist and dist >= 0 then
@@ -1367,20 +1617,20 @@ function MultiGrinder:setupGUI()
         end
     end)
     
-    -- ADDED: Mining Hitbox+ Toggle (Rotates position to hit from multiple angles)
     local MiningHitboxToggle = createButton(GeneralPage, "Mining Hitbox+: OFF", CONFIG.ToggleOffColor)
     MiningHitboxToggle.MouseButton1Click:Connect(function()
         self.MiningHitboxMode = not self.MiningHitboxMode
         self:updateGUI()
     end)
-    -- Tooltip info: This rotates your position around the ore to hit it from multiple sides rapidly
 
+    createSectionHeader(GeneralPage, "CONFIG")
+    
     local SaveSettingsButton = createButton(GeneralPage, "Save Settings", CONFIG.AccentColor)
     SaveSettingsButton.MouseButton1Click:Connect(function()
         self:SaveSettings()
     end)
     
-    local ResetSettingsButton = createButton(GeneralPage, "Reset All Settings", Color3.fromRGB(220, 120, 0))
+    local ResetSettingsButton = createButton(GeneralPage, "Reset All Settings", Color3.fromRGB(200, 140, 0))
     ResetSettingsButton.MouseButton1Click:Connect(function()
         self:ResetSettings()
     end)
@@ -1390,7 +1640,9 @@ function MultiGrinder:setupGUI()
     -- COMBAT PAGE
     local CombatPage = createContentPage(ContentContainer, "Combat")
     local CombatLayout = createListLayout(CombatPage)
-    CombatLayout.Padding = UDim.new(0, 5) 
+    CombatLayout.Padding = UDim.new(0, 10) 
+    
+    createSectionHeader(CombatPage, "COMBAT SETTINGS")
     
     createInputLabel(CombatPage, "Attack Weapon/Tool Name:")
     local CToolNameInput = createTextBox(CombatPage, self.CombatToolName, "E.g., Clockwork Hammer")
@@ -1410,7 +1662,9 @@ function MultiGrinder:setupGUI()
         self.CurrentTargetIdentifier = nil 
     end)
     
-    createInputLabel(CombatPage, "Priority Scan Radius (studs):")
+    createSectionHeader(CombatPage, "PRIORITY AREAS")
+    
+    createInputLabel(CombatPage, "Scan Radius (studs):")
     local CPriorityRadiusInput = createTextBox(CombatPage, tostring(self.CombatPriorityAreaScanRadius), "E.g., 50")
     CPriorityRadiusInput.FocusLost:Connect(function()
         local radius = tonumber(CPriorityRadiusInput.Text)
@@ -1421,7 +1675,7 @@ function MultiGrinder:setupGUI()
         end
     end)
 
-    createInputLabel(CombatPage, "Priority Scan Time (sec):")
+    createInputLabel(CombatPage, "Scan Time (sec):")
     local CPriorityScanTimeInput = createTextBox(CombatPage, tostring(self.CombatPriorityAreaScanTime), "E.g., 3")
     CPriorityScanTimeInput.FocusLost:Connect(function()
         local scanTime = tonumber(CPriorityScanTimeInput.Text)
@@ -1432,7 +1686,7 @@ function MultiGrinder:setupGUI()
         end
     end)
 
-    local PriorityAreaToggleButton = createButton(CombatPage, "Priority Areas: OFF", CONFIG.ToggleOffColor, 25)
+    local PriorityAreaToggleButton = createButton(CombatPage, "Priority Areas: OFF", CONFIG.ToggleOffColor)
     PriorityAreaToggleButton.MouseButton1Click:Connect(function()
         self.PriorityAreaEnabled = not self.PriorityAreaEnabled
         self.CurrentPriorityAreaIndex = 1
@@ -1444,7 +1698,7 @@ function MultiGrinder:setupGUI()
         self:updateGUI()
     end)
     
-    local AddPriorityAreaButton = createButton(CombatPage, "Add Current Position as Area", CONFIG.AccentColor, 25)
+    local AddPriorityAreaButton = createButton(CombatPage, "Add Current Position as Area", CONFIG.AccentColor)
     AddPriorityAreaButton.MouseButton1Click:Connect(function()
         local hrp = self:getHumanoidRootPart()
         if hrp then
@@ -1453,7 +1707,7 @@ function MultiGrinder:setupGUI()
         end
     end)
     
-    local ClearLastAreaButton = createButton(CombatPage, "Clear Last Area", Color3.fromRGB(220, 120, 0), 25)
+    local ClearLastAreaButton = createButton(CombatPage, "Clear Last Area", Color3.fromRGB(200, 140, 0))
     ClearLastAreaButton.MouseButton1Click:Connect(function()
         if #self.PriorityAreas > 0 then
             table.remove(self.PriorityAreas)
@@ -1468,8 +1722,8 @@ function MultiGrinder:setupGUI()
     PriorityAreaCountLabel.Name = "PriorityAreaCountLabel"
     PriorityAreaCountLabel.Size = UDim2.new(0.9, 0, 0, 20)
     PriorityAreaCountLabel.Text = "Areas: 0"
-    PriorityAreaCountLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-    PriorityAreaCountLabel.Font = Enum.Font.Gotham
+    PriorityAreaCountLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+    PriorityAreaCountLabel.Font = Enum.Font.GothamBold
     PriorityAreaCountLabel.TextSize = 14
     PriorityAreaCountLabel.BackgroundTransparency = 1
     PriorityAreaCountLabel.TextXAlignment = Enum.TextXAlignment.Center
@@ -1480,7 +1734,9 @@ function MultiGrinder:setupGUI()
     -- MINING PAGE
     local MiningPage = createContentPage(ContentContainer, "Mining")
     local MiningLayout = createListLayout(MiningPage)
-    MiningLayout.Padding = UDim.new(0, 5) 
+    MiningLayout.Padding = UDim.new(0, 10) 
+    
+    createSectionHeader(MiningPage, "MINING SETTINGS")
     
     createInputLabel(MiningPage, "Mining Tool Name:")
     local MToolNameInput = createTextBox(MiningPage, self.MiningToolName, "E.g., Eternium Pickaxe")
@@ -1500,7 +1756,9 @@ function MultiGrinder:setupGUI()
         self.CurrentTargetIdentifier = nil 
     end)
     
-    createInputLabel(MiningPage, "Priority Scan Radius (studs):")
+    createSectionHeader(MiningPage, "PRIORITY AREAS")
+    
+    createInputLabel(MiningPage, "Scan Radius (studs):")
     local MPriorityRadiusInput = createTextBox(MiningPage, tostring(self.MiningPriorityAreaScanRadius), "E.g., 30")
     MPriorityRadiusInput.FocusLost:Connect(function()
         local radius = tonumber(MPriorityRadiusInput.Text)
@@ -1511,7 +1769,7 @@ function MultiGrinder:setupGUI()
         end
     end)
 
-    createInputLabel(MiningPage, "Priority Scan Time (sec):")
+    createInputLabel(MiningPage, "Scan Time (sec):")
     local MPriorityScanTimeInput = createTextBox(MiningPage, tostring(self.MiningPriorityAreaScanTime), "E.g., 3")
     MPriorityScanTimeInput.FocusLost:Connect(function()
         local scanTime = tonumber(MPriorityScanTimeInput.Text)
@@ -1522,7 +1780,7 @@ function MultiGrinder:setupGUI()
         end
     end)
 
-    local MiningPriorityAreaToggleButton = createButton(MiningPage, "Priority Areas: OFF", CONFIG.ToggleOffColor, 25)
+    local MiningPriorityAreaToggleButton = createButton(MiningPage, "Priority Areas: OFF", CONFIG.ToggleOffColor)
     MiningPriorityAreaToggleButton.MouseButton1Click:Connect(function()
         self.MiningPriorityAreaEnabled = not self.MiningPriorityAreaEnabled
         self.CurrentMiningPriorityAreaIndex = 1
@@ -1530,11 +1788,12 @@ function MultiGrinder:setupGUI()
         self.MiningPriorityAreaTarget = nil
         self.CurrentTargetIdentifier = nil
         self.CurrentTarget = nil
+        self.LastMiningAngle = 0
         restoreCamera(self)
         self:updateGUI()
     end)
     
-    local MiningAddPriorityAreaButton = createButton(MiningPage, "Add Current Position as Area", CONFIG.AccentColor, 25)
+    local MiningAddPriorityAreaButton = createButton(MiningPage, "Add Current Position as Area", CONFIG.AccentColor)
     MiningAddPriorityAreaButton.MouseButton1Click:Connect(function()
         local hrp = self:getHumanoidRootPart()
         if hrp then
@@ -1543,7 +1802,7 @@ function MultiGrinder:setupGUI()
         end
     end)
     
-    local MiningClearLastAreaButton = createButton(MiningPage, "Clear Last Area", Color3.fromRGB(220, 120, 0), 25)
+    local MiningClearLastAreaButton = createButton(MiningPage, "Clear Last Area", Color3.fromRGB(200, 140, 0))
     MiningClearLastAreaButton.MouseButton1Click:Connect(function()
         if #self.MiningPriorityAreas > 0 then
             table.remove(self.MiningPriorityAreas)
@@ -1558,8 +1817,8 @@ function MultiGrinder:setupGUI()
     MiningPriorityAreaCountLabel.Name = "MiningPriorityAreaCountLabel"
     MiningPriorityAreaCountLabel.Size = UDim2.new(0.9, 0, 0, 20)
     MiningPriorityAreaCountLabel.Text = "Areas: 0"
-    MiningPriorityAreaCountLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-    MiningPriorityAreaCountLabel.Font = Enum.Font.Gotham
+    MiningPriorityAreaCountLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+    MiningPriorityAreaCountLabel.Font = Enum.Font.GothamBold
     MiningPriorityAreaCountLabel.TextSize = 14
     MiningPriorityAreaCountLabel.BackgroundTransparency = 1
     MiningPriorityAreaCountLabel.TextXAlignment = Enum.TextXAlignment.Center
@@ -1583,8 +1842,9 @@ function MultiGrinder:setupGUI()
             TeleportOnRespawnButton = TeleportOnRespawnButton,
             AutoBlockButton = AutoBlockButton,
             SpecialAttackButton = SpecialAttackButton,
-            -- ADDED: Distance controls
             SafeDistanceToggle = SafeDistanceToggle,
+            NoclipButton = NoclipButton,
+            FlyButton = FlyButton,
             CombatDistanceInput = CombatDistanceInput,
             MiningDistanceInput = MiningDistanceInput,
             MiningHitboxToggle = MiningHitboxToggle,
@@ -1615,7 +1875,7 @@ function MultiGrinder:setupGUI()
 
     MinimizeButton.MouseButton1Click:Connect(function()
         self:setMinimizedState(not self.IsMinimized)
-        MinimizeButton.Text = self.IsMinimized and "+" or "-"
+        MinimizeButton.Text = self.IsMinimized and "+" or "−"
     end)
 
     CloseButton.MouseButton1Click:Connect(function()
@@ -1623,12 +1883,19 @@ function MultiGrinder:setupGUI()
             task.cancel(self.LoopThread) 
         end
         self:StopSpecialAttack()
+        -- Cleanup movement
+        if self.NoclipEnabled then
+            self:ToggleNoclip(false)
+        end
+        if self.FlyEnabled then
+            self:ToggleFly(false)
+        end
         restoreCamera(self)
         ScreenGui:Destroy()
     end)
     
     self:setMinimizedState(self.IsMinimized)
-    MinimizeButton.Text = self.IsMinimized and "+" or "-"
+    MinimizeButton.Text = self.IsMinimized and "+" or "−"
     self:showTab(self.CurrentTab)
 end
 
@@ -1647,6 +1914,7 @@ function MultiGrinder:start()
             if self.Enabled then
                 local hrp = self:getHumanoidRootPart()
                 if hrp then
+                    -- Normal farming only (Boss system removed)
                     if self.Mode == "Combat" then
                         self:executeCombatAction(hrp)
                     elseif self.Mode == "Mining" then
