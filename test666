@@ -15,7 +15,7 @@ local mouse = player:GetMouse()
 -- CONFIGURATION
 local CONFIG = {
     CoinName = "Coin_Server",        -- Change this if your executor/inspect shows a different name
-    FlySpeed = 40,
+    FlySpeed = 30,
     CollectionRadius = 3,
     SafeMode = true,
     SafeDistance = 45,
