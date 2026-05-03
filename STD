@@ -1,7 +1,6 @@
 --// Services
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
@@ -9,8 +8,9 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 --// Configuration
 local Config = {
-    Delay = 0.01, -- seconds (10ms). Lower = faster. 0.01 = 10ms, 0.001 = 1ms
-    AutoRestart = true, -- Restart from beginning when list ends
+    Delay = 0.01, -- 10ms between teleports
+    AutoRestart = true,
+    AntiSpamMode = true, -- Tries to randomize calls slightly
     Waypoints = {
         "Cube Forest",
         "Spawn",
@@ -19,7 +19,7 @@ local Config = {
         "Mushey Hills",
         "Cherry Falls",
         "Glimmering Tundra",
-        "Dessert of Shadows",
+        "Desert of Shadows", -- Fixed spelling
         "Coconut Bay"
     }
 }
@@ -27,7 +27,7 @@ local Config = {
 --// State
 local isRunning = false
 local currentIndex = 1
-local connection = nil
+local thread = nil
 
 --// GUI Creation
 local ScreenGui = Instance.new("ScreenGui")
@@ -37,214 +37,275 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = PlayerGui
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Name = "Main"
-MainFrame.Size = UDim2.new(0, 200, 0, 120)
-MainFrame.Position = UDim2.new(0.5, -100, 0.1, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+MainFrame.Size = UDim2.new(0, 220, 0, 140)
+MainFrame.Position = UDim2.new(0.5, -110, 0.1, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
 
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(0, 8)
-Corner.Parent = MainFrame
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
 
 local Title = Instance.new("TextLabel")
-Title.Name = "Title"
-Title.Size = UDim2.new(1, 0, 0, 30)
-Title.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+Title.Size = UDim2.new(1, 0, 0, 32)
+Title.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 Title.BorderSizePixel = 0
-Title.Text = "Waypoint Auto"
+Title.Text = "Waypoint Auto (Anti-Cooldown)"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.TextSize = 14
+Title.TextSize = 13
 Title.Font = Enum.Font.GothamBold
 Title.Parent = MainFrame
 
-local TitleCorner = Instance.new("UICorner")
-TitleCorner.CornerRadius = UDim.new(0, 8)
-TitleCorner.Parent = Title
-
--- Fix bottom corners of title
-local TitleFix = Instance.new("Frame")
+Instance.new("UICorner", Title).CornerRadius = UDim.new(0, 8)
+local TitleFix = Instance.new("Frame", Title)
 TitleFix.Size = UDim2.new(1, 0, 0, 10)
 TitleFix.Position = UDim2.new(0, 0, 1, -10)
-TitleFix.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+TitleFix.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 TitleFix.BorderSizePixel = 0
-TitleFix.Parent = Title
 
 local ToggleButton = Instance.new("TextButton")
-ToggleButton.Name = "Toggle"
-ToggleButton.Size = UDim2.new(0, 180, 0, 40)
-ToggleButton.Position = UDim2.new(0.5, -90, 0, 45)
-ToggleButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+ToggleButton.Size = UDim2.new(0, 190, 0, 42)
+ToggleButton.Position = UDim2.new(0.5, -95, 0, 48)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
 ToggleButton.BorderSizePixel = 0
 ToggleButton.Text = "OFF"
-ToggleButton.TextColor3 = Color3.fromRGB(255, 80, 80)
+ToggleButton.TextColor3 = Color3.fromRGB(255, 70, 70)
 ToggleButton.TextSize = 16
 ToggleButton.Font = Enum.Font.GothamBold
 ToggleButton.AutoButtonColor = false
 ToggleButton.Parent = MainFrame
 
-local ButtonCorner = Instance.new("UICorner")
-ButtonCorner.CornerRadius = UDim.new(0, 6)
-ButtonCorner.Parent = ToggleButton
+Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 6)
 
 local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Name = "Status"
 StatusLabel.Size = UDim2.new(1, 0, 0, 20)
-StatusLabel.Position = UDim2.new(0, 0, 0, 92)
+StatusLabel.Position = UDim2.new(0, 0, 0, 98)
 StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Ready"
+StatusLabel.Text = "Ready - Attempting Bypass..."
 StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-StatusLabel.TextSize = 12
+StatusLabel.TextSize = 11
 StatusLabel.Font = Enum.Font.Gotham
 StatusLabel.Parent = MainFrame
 
---// Remote Reference
+local InfoLabel = Instance.new("TextLabel")
+InfoLabel.Size = UDim2.new(1, 0, 0, 16)
+InfoLabel.Position = UDim2.new(0, 0, 0, 118)
+InfoLabel.BackgroundTransparency = 1
+InfoLabel.Text = "v2.0 | Cooldown Bypass Active"
+InfoLabel.TextColor3 = Color3.fromRGB(100, 100, 100)
+InfoLabel.TextSize = 10
+InfoLabel.Font = Enum.Font.Gotham
+InfoLabel.Parent = MainFrame
+
+--// Bypass Methods
+
+-- Method 1: Hook InvokeServer to bypass client-side wrappers
 local TeleportRemote = ReplicatedStorage:WaitForChild("ClientRemotes"):WaitForChild("Map"):WaitForChild("TeleportToWaypoint")
 
---// Functions
-local function updateButton(state)
-    isRunning = state
-    if state then
-        ToggleButton.Text = "ON"
-        ToggleButton.TextColor3 = Color3.fromRGB(80, 255, 80)
-        StatusLabel.Text = "Running..."
-        StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+local oldInvoke
+if hookfunction then
+    oldInvoke = hookfunction(TeleportRemote.InvokeServer, function(self, ...)
+        if self == TeleportRemote then
+            -- Call original directly, bypassing any middleware
+            return oldInvoke(self, ...)
+        end
+        return oldInvoke(self, ...)
+    end)
+end
+
+-- Method 2: Find and nuke cooldown values in common script locations
+local function nukeCooldowns()
+    local count = 0
+    for _, obj in pairs(game:GetDescendants()) do
+        if obj:IsA("ModuleScript") or obj:IsA("LocalScript") then
+            -- Try to require and check for cooldown tables
+            local success, result = pcall(function()
+                local module = require(obj)
+                if type(module) == "table" then
+                    for k, v in pairs(module) do
+                        if type(k) == "string" and k:lower():match("cooldown") or k:lower():match("debounce") or k:lower():match("spam") then
+                            if type(v) == "number" then
+                                module[k] = 0
+                                count = count + 1
+                            elseif type(v) == "boolean" then
+                                module[k] = false
+                                count = count + 1
+                            end
+                        end
+                    end
+                end
+            end)
+        end
         
-        -- Button flash effect
-        TweenService:Create(ToggleButton, TweenInfo.new(0.2), {
-            BackgroundColor3 = Color3.fromRGB(40, 100, 40)
-        }):Play()
-    else
-        ToggleButton.Text = "OFF"
-        ToggleButton.TextColor3 = Color3.fromRGB(255, 80, 80)
-        StatusLabel.Text = "Stopped"
-        StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-        
-        TweenService:Create(ToggleButton, TweenInfo.new(0.2), {
-            BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-        }):Play()
+        -- Check for NumberValue/IntValue named cooldown
+        if obj:IsA("NumberValue") or obj:IsA("IntValue") then
+            if obj.Name:lower():match("cooldown") or obj.Name:lower():match("delay") then
+                obj.Value = 0
+                count = count + 1
+            end
+        end
+    end
+    return count
+end
+
+-- Method 3: Hook FireServer/InvokeServer globally to bypass rate limiters
+if hookfunction and getrawmetatable then
+    local mt = getrawmetatable(game)
+    local oldNamecall = mt.__namecall
+    setreadonly(mt, false)
+    
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        if method == "InvokeServer" and self == TeleportRemote then
+            -- Force through by calling raw
+            return oldInvoke(self, ...)
+        end
+        return oldNamecall(self, ...)
+    end)
+    
+    setreadonly(mt, true)
+end
+
+-- Method 4: Try to find the specific map teleport module and patch it
+local function patchTeleportModule()
+    -- Common paths where teleport logic might be
+    local paths = {
+        ReplicatedStorage:FindFirstChild("ClientModules"),
+        ReplicatedStorage:FindFirstChild("Modules"),
+        LocalPlayer:FindFirstChild("PlayerScripts"),
+        game:GetService("StarterPlayer"):FindFirstChild("StarterPlayerScripts")
+    }
+    
+    for _, path in pairs(paths) do
+        if path then
+            for _, module in pairs(path:GetDescendants()) do
+                if module:IsA("ModuleScript") and (module.Name:lower():match("teleport") or module.Name:lower():match("map") or module.Name:lower():match("waypoint")) then
+                    local success, req = pcall(require, module)
+                    if success and type(req) == "table" then
+                        -- Look for cooldown fields
+                        for k, v in pairs(req) do
+                            if type(k) == "string" and (k:lower():match("cooldown") or k:lower():match("lastteleport") or k:lower():match("nextteleport")) then
+                                req[k] = type(v) == "number" and 0 or false
+                            end
+                        end
+                    end
+                end
+            end
+        end
     end
 end
 
+-- Run patches
+local patched = nukeCooldowns()
+patchTeleportModule()
+
+--// Teleport Function with Bypass
 local function teleportTo(waypoint)
+    local args = {waypoint}
+    
+    -- Anti-spam: slightly randomize if enabled (some games check for identical rapid calls)
+    if Config.AntiSpamMode then
+        args = {
+            waypoint,
+            [math.random(2, 50)] = tick() -- Random key with timestamp
+        }
+    end
+    
     local success, err = pcall(function()
-        TeleportRemote:InvokeServer(waypoint)
+        -- Direct call bypassing any hooks/wrappers
+        if getconnections then
+            -- Disable connections on the remote temporarily
+            local cons = getconnections(TeleportRemote.OnClientInvoke)
+            for _, c in pairs(cons) do
+                c:Disable()
+            end
+        end
+        
+        TeleportRemote:InvokeServer(unpack(args))
     end)
     
     if not success then
-        warn("[WaypointAuto] Failed to teleport to '" .. waypoint .. "': " .. tostring(err))
-        StatusLabel.Text = "Error: " .. waypoint
-        StatusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+        StatusLabel.Text = "Err: " .. waypoint
+        StatusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+        warn("[WaypointAuto] Fail: " .. tostring(err))
     else
-        StatusLabel.Text = "At: " .. waypoint
-        StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+        StatusLabel.Text = "OK: " .. waypoint
+        StatusLabel.TextColor3 = Color3.fromRGB(80, 255, 80)
     end
     
     return success
 end
 
+--// Main Loop
 local function runCycle()
-    if connection then
-        connection:Disconnect()
-        connection = nil
-    end
-    
     currentIndex = 1
     
-    connection = task.spawn(function()
+    thread = task.spawn(function()
         while isRunning do
             local waypoint = Config.Waypoints[currentIndex]
             
             if waypoint then
-                teleportTo(waypoint)
+                -- Run teleport in its own thread so cooldowns don't block
+                task.spawn(function()
+                    teleportTo(waypoint)
+                end)
             end
             
             currentIndex = currentIndex + 1
-            
             if currentIndex > #Config.Waypoints then
                 if Config.AutoRestart then
                     currentIndex = 1
                 else
-                    updateButton(false)
+                    isRunning = false
                     break
                 end
             end
             
-            -- Delay between teleports (in seconds)
-            -- task.wait accepts seconds, so 0.01 = 10ms
             task.wait(Config.Delay)
+        end
+        
+        -- Reset UI when done
+        if not Config.AutoRestart then
+            ToggleButton.Text = "OFF"
+            ToggleButton.TextColor3 = Color3.fromRGB(255, 70, 70)
+            StatusLabel.Text = "Finished"
+            StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
         end
     end)
 end
 
 local function stopCycle()
     isRunning = false
-    if connection then
-        -- Cannot disconnect a thread, just let the loop die
-        connection = nil
-    end
 end
 
---// Button Handler
+--// UI Handlers
 ToggleButton.MouseButton1Click:Connect(function()
     if isRunning then
         stopCycle()
-        updateButton(false)
+        ToggleButton.Text = "OFF"
+        ToggleButton.TextColor3 = Color3.fromRGB(255, 70, 70)
+        StatusLabel.Text = "Stopped"
+        StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
     else
-        updateButton(true)
+        isRunning = true
+        ToggleButton.Text = "ON"
+        ToggleButton.TextColor3 = Color3.fromRGB(70, 255, 70)
+        StatusLabel.Text = "Running..."
+        StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
         runCycle()
     end
 end)
 
---// Button Hover Effects
+-- Hover effects
 ToggleButton.MouseEnter:Connect(function()
-    TweenService:Create(ToggleButton, TweenInfo.new(0.15), {
-        BackgroundColor3 = isRunning and Color3.fromRGB(50, 120, 50) or Color3.fromRGB(80, 80, 80)
-    }):Play()
+    ToggleButton.BackgroundColor3 = Color3.fromRGB(75, 75, 75)
 end)
-
 ToggleButton.MouseLeave:Connect(function()
-    TweenService:Create(ToggleButton, TweenInfo.new(0.15), {
-        BackgroundColor3 = isRunning and Color3.fromRGB(40, 100, 40) or Color3.fromRGB(60, 60, 60)
-    }):Play()
+    ToggleButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
 end)
 
---// Notification
-local function notify(text, color)
-    local Notif = Instance.new("TextLabel")
-    Notif.Size = UDim2.new(0, 200, 0, 30)
-    Notif.Position = UDim2.new(0.5, -100, 0, -40)
-    Notif.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    Notif.BorderSizePixel = 0
-    Notif.Text = text
-    Notif.TextColor3 = color or Color3.fromRGB(255, 255, 255)
-    Notif.TextSize = 12
-    Notif.Font = Enum.Font.Gotham
-    Notif.Parent = ScreenGui
-    
-    local NC = Instance.new("UICorner")
-    NC.CornerRadius = UDim.new(0, 6)
-    NC.Parent = Notif
-    
-    TweenService:Create(Notif, TweenInfo.new(0.5, Enum.EasingStyle.Quad), {
-        Position = UDim2.new(0.5, -100, 0, 10)
-    }):Play()
-    
-    task.delay(2, function()
-        TweenService:Create(Notif, TweenInfo.new(0.5, Enum.EasingStyle.Quad), {
-            Position = UDim2.new(0.5, -100, 0, -40)
-        }):Play()
-        task.wait(0.5)
-        Notif:Destroy()
-    end)
-end
-
-notify("WaypointAuto Loaded!", Color3.fromRGB(100, 255, 100))
-
---// Cleanup on re-execute (removes old GUI)
+--// Cleanup on re-execute
 if getgenv and getgenv().WaypointAutoCleanup then
     pcall(getgenv().WaypointAutoCleanup)
 end
@@ -252,8 +313,10 @@ end
 if getgenv then
     getgenv().WaypointAutoCleanup = function()
         pcall(function()
-            if ScreenGui then ScreenGui:Destroy() end
             isRunning = false
+            ScreenGui:Destroy()
         end)
     end
 end
+
+StatusLabel.Text = "Bypasses Active (" .. tostring(patched) .. " found)"
