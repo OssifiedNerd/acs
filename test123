@@ -12,7 +12,7 @@ StudlandsFisher.__index = StudlandsFisher
 -- CONFIGURATION - Modern Dark Theme
 local CONFIG = {
     ScriptName = "Studlands Fisher",
-    
+
     FrameWidth = 300,
     TitleBarHeight = 40,
     TabBarHeight = 35,
@@ -22,7 +22,7 @@ local CONFIG = {
     ButtonCornerRadius = 8,
     InputHeight = 32,
     SectionSpacing = 15,
-    
+
     -- Modern Color Palette
     BackgroundColor = Color3.fromRGB(22, 22, 30),
     TitleBarColor = Color3.fromRGB(30, 30, 42),
@@ -34,22 +34,37 @@ local CONFIG = {
     InfoColor = Color3.fromRGB(100, 150, 255),
     InputBackgroundColor = Color3.fromRGB(35, 35, 48),
     SectionHeaderColor = Color3.fromRGB(150, 150, 170),
-    
+
     CloseButtonBaseColor = Color3.fromRGB(200, 60, 60),
     CloseButtonHoverColor = Color3.fromRGB(220, 80, 80),
     MinimizeButtonBaseColor = Color3.fromRGB(80, 80, 100),
     MinimizeButtonHoverColor = Color3.fromRGB(110, 110, 130),
-    
+
     -- Fisher Settings
     RodName = "Golden Fishing Rod",
     CastCooldown = 2,
     ClickDelay = 0.05,
     MaxWaitTime = 10,
-    
+
     -- GUI Detection (adjust after running inspector)
     FishingGuiPatterns = {"Fishing", "Minigame", "Fish"},
     FishButtonPatterns = {"Fish", "Click"},
 }
+
+local function getRemotes()
+    local remotes = {}
+    local success, err = pcall(function()
+        local clientRemotes = ReplicatedStorage:WaitForChild("ClientRemotes", 5)
+        remotes.EquipItem = clientRemotes:WaitForChild("Inventory", 5):WaitForChild("EquipItem", 5)
+        remotes.UseItem = clientRemotes:WaitForChild("Character", 5):WaitForChild("UseItem", 5)
+    end)
+
+    if not success then
+        warn("[Fisher] Failed to get remotes: " .. tostring(err))
+    end
+
+    return remotes
+end
 
 function StudlandsFisher:new()
     local self = setmetatable({
@@ -59,37 +74,57 @@ function StudlandsFisher:new()
         LoopThread = nil,
         MainGui = nil,
         CurrentTab = "Main",
-        
+        Remotes = getRemotes(),
+
         -- Stats
         CastsTotal = 0,
         CastsSuccess = 0,
         CastsFailed = 0,
         FishClickedTotal = 0,
         StartTime = nil,
-        
+
         -- Settings
         AutoCastEnabled = true,
         AutoSolveEnabled = true,
-        ClickMethod = "VIM", -- "VIM" or "Direct"
+        ClickMethod = "VIM",
         DebugMode = false,
         StopOnFail = false,
-        
+
         -- UI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
         IsMinimized = false,
-        
+
         -- Logs
         Logs = {},
         MaxLogs = 50,
-        
+
     }, StudlandsFisher)
-    
+
     self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
     self:setupGUI()
     return self
 end
 
 -- ==================== CORE FISHING LOGIC ====================
+
+function StudlandsFisher:equipRod(rodName)
+    if not self.Remotes.EquipItem then
+        self:log("EquipItem remote not found", "error")
+        return false
+    end
+
+    local success = pcall(function()
+        self.Remotes.EquipItem:InvokeServer(rodName)
+    end)
+
+    if success then
+        self:log("Equipped: " .. rodName, "success")
+        return true
+    else
+        self:log("Failed to equip: " .. rodName, "error")
+        return false
+    end
+end
 
 function StudlandsFisher:getRod()
     local char = LocalPlayer.Character
@@ -100,34 +135,27 @@ end
 function StudlandsFisher:castRod()
     local rod = self:getRod()
     if not rod then
-        self:log("Rod not found: " .. CONFIG.RodName, "error")
+        self:log("Rod not found in character: " .. CONFIG.RodName, "error")
+        self:log("Make sure rod is equipped or enable Auto Equip", "warning")
         return false
     end
-    
-    local remote = ReplicatedStorage:FindFirstChild("ClientRemotes", true)
-    if remote then
-        remote = remote:FindFirstChild("Character", true)
-        if remote then
-            remote = remote:FindFirstChild("UseItem", true)
-        end
-    end
-    
-    if not remote then
+
+    if not self.Remotes.UseItem then
         self:log("UseItem remote not found", "error")
         return false
     end
-    
+
     local success = pcall(function()
-        remote:FireServer(rod, false)
+        self.Remotes.UseItem:FireServer(rod, false)
     end)
-    
+
     if success then
-        self.CastsTotal += 1
+        self.CastsTotal = self.CastsTotal + 1
         self:log("Casted rod", "info")
         self:updateStats()
         return true
     else
-        self.CastsFailed += 1
+        self.CastsFailed = self.CastsFailed + 1
         self:log("Failed to cast rod", "error")
         self:updateStats()
         return false
@@ -136,18 +164,16 @@ end
 
 function StudlandsFisher:findFishingGui()
     local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-    
+
     for _, gui in ipairs(playerGui:GetChildren()) do
         if gui:IsA("ScreenGui") and gui.Enabled then
-            -- Check name patterns
             local nameLower = gui.Name:lower()
             for _, pattern in ipairs(CONFIG.FishingGuiPatterns) do
                 if nameLower:find(pattern:lower()) then
                     return gui
                 end
             end
-            
-            -- Check for fish-like descendants
+
             for _, child in ipairs(gui:GetDescendants()) do
                 if child:IsA("GuiObject") and child.Visible then
                     local childName = child.Name:lower()
@@ -165,25 +191,22 @@ end
 
 function StudlandsFisher:parseFish(gui)
     local fishList = {}
-    
+
     for _, obj in ipairs(gui:GetDescendants()) do
         if (obj:IsA("TextButton") or obj:IsA("ImageButton")) and obj.Visible then
             local number = nil
-            
-            -- Method 1: Direct text on button
+
             if obj:IsA("TextButton") then
                 number = tonumber(obj.Text)
             end
-            
-            -- Method 2: Number child
+
             if not number then
                 local numChild = obj:FindFirstChild("Number") or obj:FindFirstChild("Order") or obj:FindFirstChild("Index")
                 if numChild and numChild:IsA("TextLabel") then
                     number = tonumber(numChild.Text)
                 end
             end
-            
-            -- Method 3: Any TextLabel child with numeric text
+
             if not number then
                 for _, child in ipairs(obj:GetDescendants()) do
                     if child:IsA("TextLabel") and child.Visible then
@@ -195,15 +218,14 @@ function StudlandsFisher:parseFish(gui)
                     end
                 end
             end
-            
-            -- Method 4: Name contains number
+
             if not number then
                 local nameNum = obj.Name:match("%d+")
                 if nameNum then
                     number = tonumber(nameNum)
                 end
             end
-            
+
             if number then
                 table.insert(fishList, {
                     Button = obj,
@@ -214,21 +236,21 @@ function StudlandsFisher:parseFish(gui)
             end
         end
     end
-    
+
     table.sort(fishList, function(a, b)
         return a.Number < b.Number
     end)
-    
+
     return fishList
 end
 
 function StudlandsFisher:clickElement(element)
     if not element or not element.Visible then return false end
-    
+
     local pos = element.AbsolutePosition
     local size = element.AbsoluteSize
     local center = pos + (size / 2)
-    
+
     if self.ClickMethod == "VIM" then
         VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
         task.wait(0.01)
@@ -241,7 +263,7 @@ function StudlandsFisher:clickElement(element)
             element.MouseButton1Click:Fire()
         end)
     end
-    
+
     return true
 end
 
@@ -250,11 +272,11 @@ function StudlandsFisher:solveMinigame(gui)
         self:log("Auto-solve disabled, waiting for manual input", "warning")
         return false
     end
-    
+
     self:log("Solving minigame...", "info")
-    
+
     local fishList = self:parseFish(gui)
-    
+
     if #fishList == 0 then
         self:log("No fish found in GUI!", "error")
         if self.DebugMode then
@@ -262,16 +284,16 @@ function StudlandsFisher:solveMinigame(gui)
         end
         return false
     end
-    
+
     self:log("Found " .. #fishList .. " fish to click", "info")
-    
+
     for i, fish in ipairs(fishList) do
         self:clickElement(fish.Button)
-        self.FishClickedTotal += 1
+        self.FishClickedTotal = self.FishClickedTotal + 1
         task.wait(CONFIG.ClickDelay)
     end
-    
-    self.CastsSuccess += 1
+
+    self.CastsSuccess = self.CastsSuccess + 1
     self:log("Minigame completed", "success")
     self:updateStats()
     return true
@@ -283,36 +305,30 @@ function StudlandsFisher:fishingLoop()
     while self.Enabled do
         if not self.IsFishing and self.AutoCastEnabled then
             self.IsFishing = true
-            
-            -- Cast
+
             if self:castRod() then
-                -- Wait for GUI
                 local gui = nil
                 local waitStart = tick()
-                
+
                 while tick() - waitStart < CONFIG.MaxWaitTime do
                     gui = self:findFishingGui()
                     if gui then break end
                     task.wait(0.1)
                 end
-                
+
                 if gui then
                     self.CurrentGui = gui
-                    
-                    -- Wait a moment for GUI to fully load
                     task.wait(0.2)
-                    
-                    -- Solve
+
                     local success = self:solveMinigame(gui)
-                    
+
                     if not success and self.StopOnFail then
                         self:log("Stopping due to failure", "error")
                         self.Enabled = false
                         self:updateGUI()
                         break
                     end
-                    
-                    -- Wait for GUI to close
+
                     local closeStart = tick()
                     while gui and gui.Parent and tick() - closeStart < 5 do
                         task.wait(0.1)
@@ -321,14 +337,14 @@ function StudlandsFisher:fishingLoop()
                     self:log("No fishing GUI appeared", "warning")
                 end
             end
-            
+
             self.IsFishing = false
             task.wait(CONFIG.CastCooldown)
         else
             task.wait(0.1)
         end
     end
-    
+
     self.IsFishing = false
     self:log("Fishing loop stopped", "info")
 end
@@ -338,7 +354,7 @@ end
 function StudlandsFisher:inspectGui()
     local playerGui = LocalPlayer:WaitForChild("PlayerGui")
     self:log("=== INSPECTING GUI ===", "info")
-    
+
     for _, gui in ipairs(playerGui:GetChildren()) do
         if gui:IsA("ScreenGui") then
             self:log("ScreenGui: " .. gui.Name .. " | Enabled: " .. tostring(gui.Enabled), "info")
@@ -365,18 +381,17 @@ function StudlandsFisher:log(message, level)
     level = level or "info"
     local timestamp = os.date("%H:%M:%S")
     local entry = "[" .. timestamp .. "] [" .. level:upper() .. "] " .. message
-    
+
     table.insert(self.Logs, 1, {text = entry, level = level})
-    
+
     if #self.Logs > self.MaxLogs then
         table.remove(self.Logs)
     end
-    
-    -- Update log display if available
+
     if self.MainGui and self.MainGui.LogsPage and self.MainGui.LogsPage.LogText then
         self:updateLogDisplay()
     end
-    
+
     print("[Fisher] " .. entry)
 end
 
@@ -392,20 +407,23 @@ end
 
 function StudlandsFisher:updateStats()
     if not self.MainGui then return end
-    
+
     local runtime = self.StartTime and (tick() - self.StartTime) or 0
     local hours = math.floor(runtime / 3600)
     local mins = math.floor((runtime % 3600) / 60)
     local secs = math.floor(runtime % 60)
-    
+
     local stats = self.MainGui.MainPage
     stats.CastsLabel.Text = "Casts: " .. self.CastsTotal
     stats.SuccessLabel.Text = "Success: " .. self.CastsSuccess
     stats.FailedLabel.Text = "Failed: " .. self.CastsFailed
     stats.FishClickedLabel.Text = "Fish Clicked: " .. self.FishClickedTotal
     stats.RuntimeLabel.Text = string.format("Runtime: %02d:%02d:%02d", hours, mins, secs)
-    
-    local rate = self.CastsTotal > 0 and math.floor((self.CastsSuccess / self.CastsTotal) * 100) or 0
+
+    local rate = 0
+    if self.CastsTotal > 0 then
+        rate = math.floor((self.CastsSuccess / self.CastsTotal) * 100)
+    end
     stats.SuccessRateLabel.Text = "Success Rate: " .. rate .. "%"
 end
 
@@ -421,7 +439,7 @@ local function createSectionHeader(parent, text)
     header.BackgroundTransparency = 1
     header.TextXAlignment = Enum.TextXAlignment.Left
     header.Parent = parent
-    
+
     local line = Instance.new("Frame")
     line.Size = UDim2.new(0.9, 0, 0, 1)
     line.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
@@ -504,11 +522,11 @@ function StudlandsFisher:setupGUI()
     if playerGui:FindFirstChild("StudlandsFisherGui") then
         playerGui.StudlandsFisherGui:Destroy()
     end
-    
+
     local ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "StudlandsFisherGui"
     ScreenGui.Parent = playerGui
-    
+
     local MainFrame = Instance.new("Frame")
     MainFrame.Name = "MainFrame"
     MainFrame.Size = UDim2.new(0, CONFIG.FrameWidth, 0, self.InitialFrameHeight)
@@ -518,8 +536,7 @@ function StudlandsFisher:setupGUI()
     MainFrame.BorderSizePixel = 1
     MainFrame.Parent = ScreenGui
     Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, CONFIG.MainFrameCornerRadius)
-    
-    -- Shadow
+
     local Shadow = Instance.new("ImageLabel")
     Shadow.Name = "Shadow"
     Shadow.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -533,8 +550,7 @@ function StudlandsFisher:setupGUI()
     Shadow.ScaleType = Enum.ScaleType.Slice
     Shadow.SliceCenter = Rect.new(23, 23, 277, 277)
     Shadow.Parent = MainFrame
-    
-    -- Title Bar
+
     local TitleBar = Instance.new("Frame")
     TitleBar.Name = "TitleBar"
     TitleBar.Size = UDim2.new(1, 0, 0, CONFIG.TitleBarHeight)
@@ -542,7 +558,7 @@ function StudlandsFisher:setupGUI()
     TitleBar.Parent = MainFrame
     TitleBar.BorderSizePixel = 0
     Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, CONFIG.MainFrameCornerRadius)
-    
+
     local TitleLabel = Instance.new("TextLabel")
     TitleLabel.Name = "TitleLabel"
     TitleLabel.Position = UDim2.new(0, 15, 0, 0)
@@ -554,8 +570,7 @@ function StudlandsFisher:setupGUI()
     TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
     TitleLabel.BackgroundTransparency = 1
     TitleLabel.Parent = TitleBar
-    
-    -- Controls
+
     local controlSize = 24
     local function createControl(text, color, name, posX)
         local btn = Instance.new("TextButton")
@@ -571,10 +586,10 @@ function StudlandsFisher:setupGUI()
         Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
         return btn
     end
-    
+
     local CloseButton = createControl("×", CONFIG.CloseButtonBaseColor, "CloseButton", -35)
     local MinimizeButton = createControl("−", CONFIG.MinimizeButtonBaseColor, "MinimizeButton", -65)
-    
+
     MinimizeButton.MouseEnter:Connect(function()
         MinimizeButton.BackgroundColor3 = CONFIG.MinimizeButtonHoverColor
     end)
@@ -587,13 +602,12 @@ function StudlandsFisher:setupGUI()
     CloseButton.MouseLeave:Connect(function()
         CloseButton.BackgroundColor3 = CONFIG.CloseButtonBaseColor
     end)
-    
-    -- Dragging
+
     local dragging = false
     local dragInput = nil
     local dragStart = nil
     local startPos = nil
-    
+
     TitleBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
@@ -606,13 +620,13 @@ function StudlandsFisher:setupGUI()
             end)
         end
     end)
-    
+
     TitleBar.InputChanged:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
             dragInput = input
         end
     end)
-    
+
     UserInputService.InputChanged:Connect(function(input)
         if input == dragInput and dragging then
             local delta = input.Position - dragStart
@@ -620,8 +634,7 @@ function StudlandsFisher:setupGUI()
             self.UIPosition = MainFrame.Position
         end
     end)
-    
-    -- Tab Bar
+
     local TabBar = Instance.new("Frame")
     TabBar.Name = "TabBar"
     TabBar.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight)
@@ -629,15 +642,15 @@ function StudlandsFisher:setupGUI()
     TabBar.BackgroundColor3 = CONFIG.TabBarColor
     TabBar.Parent = MainFrame
     TabBar.BorderSizePixel = 0
-    
+
     local TabLayout = Instance.new("UIListLayout")
     TabLayout.FillDirection = Enum.FillDirection.Horizontal
     TabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
     TabLayout.Parent = TabBar
-    
+
     local TabNames = {"Main", "Settings", "Logs"}
     local Tabs = {}
-    
+
     for _, tabName in ipairs(TabNames) do
         local tabButton = Instance.new("TextButton")
         tabButton.Name = tabName .. "Tab"
@@ -648,14 +661,13 @@ function StudlandsFisher:setupGUI()
         tabButton.BackgroundColor3 = CONFIG.TabBarColor
         tabButton.Parent = TabBar
         tabButton.BorderSizePixel = 0
-        
+
         tabButton.MouseButton1Click:Connect(function()
             self:showTab(tabName)
         end)
         Tabs[tabName] = tabButton
     end
-    
-    -- Content Container
+
     local ContentContainer = Instance.new("ScrollingFrame")
     ContentContainer.Name = "ContentContainer"
     ContentContainer.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight + CONFIG.TabBarHeight)
@@ -667,17 +679,30 @@ function StudlandsFisher:setupGUI()
     ContentContainer.ScrollBarImageColor3 = CONFIG.AccentColor
     ContentContainer.ScrollBarThickness = 4
     ContentContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
-    
+
     local Pages = {}
-    
+
     -- ==================== MAIN PAGE ====================
     local MainPage = createContentPage(ContentContainer, "Main")
     local MainLayout = createListLayout(MainPage)
     MainLayout.Padding = UDim.new(0, 10)
-    
+
+    createSectionHeader(MainPage, "ROD SETUP")
+
+    createInputLabel(MainPage, "Rod Name (must be in backpack):")
+    local RodInput = createTextBox(MainPage, CONFIG.RodName, "E.g., Golden Fishing Rod")
+    RodInput.FocusLost:Connect(function()
+        CONFIG.RodName = RodInput.Text
+        self:log("Rod set to: " .. CONFIG.RodName, "info")
+    end)
+
+    local EquipButton = createButton(MainPage, "Equip Rod", CONFIG.AccentColor)
+    EquipButton.MouseButton1Click:Connect(function()
+        self:equipRod(CONFIG.RodName)
+    end)
+
     createSectionHeader(MainPage, "CONTROLS")
-    
-    -- Toggle Button
+
     local ToggleButton = createButton(MainPage, "FISHER: OFF", CONFIG.ToggleOffColor, 36)
     ToggleButton.MouseButton1Click:Connect(function()
         self.Enabled = not self.Enabled
@@ -697,23 +722,21 @@ function StudlandsFisher:setupGUI()
         end
         self:updateGUI()
     end)
-    
-    -- Auto Cast Toggle
+
     local AutoCastButton = createButton(MainPage, "Auto Cast: ON", CONFIG.ToggleOnColor)
     AutoCastButton.MouseButton1Click:Connect(function()
         self.AutoCastEnabled = not self.AutoCastEnabled
         self:updateGUI()
     end)
-    
-    -- Auto Solve Toggle
+
     local AutoSolveButton = createButton(MainPage, "Auto Solve: ON", CONFIG.ToggleOnColor)
     AutoSolveButton.MouseButton1Click:Connect(function()
         self.AutoSolveEnabled = not self.AutoSolveEnabled
         self:updateGUI()
     end)
-    
+
     createSectionHeader(MainPage, "STATS")
-    
+
     local CastsLabel = Instance.new("TextLabel")
     CastsLabel.Size = UDim2.new(0.9, 0, 0, 20)
     CastsLabel.Text = "Casts: 0"
@@ -723,7 +746,7 @@ function StudlandsFisher:setupGUI()
     CastsLabel.BackgroundTransparency = 1
     CastsLabel.TextXAlignment = Enum.TextXAlignment.Left
     CastsLabel.Parent = MainPage
-    
+
     local SuccessLabel = Instance.new("TextLabel")
     SuccessLabel.Size = UDim2.new(0.9, 0, 0, 20)
     SuccessLabel.Text = "Success: 0"
@@ -733,7 +756,7 @@ function StudlandsFisher:setupGUI()
     SuccessLabel.BackgroundTransparency = 1
     SuccessLabel.TextXAlignment = Enum.TextXAlignment.Left
     SuccessLabel.Parent = MainPage
-    
+
     local FailedLabel = Instance.new("TextLabel")
     FailedLabel.Size = UDim2.new(0.9, 0, 0, 20)
     FailedLabel.Text = "Failed: 0"
@@ -743,7 +766,7 @@ function StudlandsFisher:setupGUI()
     FailedLabel.BackgroundTransparency = 1
     FailedLabel.TextXAlignment = Enum.TextXAlignment.Left
     FailedLabel.Parent = MainPage
-    
+
     local FishClickedLabel = Instance.new("TextLabel")
     FishClickedLabel.Size = UDim2.new(0.9, 0, 0, 20)
     FishClickedLabel.Text = "Fish Clicked: 0"
@@ -753,7 +776,7 @@ function StudlandsFisher:setupGUI()
     FishClickedLabel.BackgroundTransparency = 1
     FishClickedLabel.TextXAlignment = Enum.TextXAlignment.Left
     FishClickedLabel.Parent = MainPage
-    
+
     local SuccessRateLabel = Instance.new("TextLabel")
     SuccessRateLabel.Size = UDim2.new(0.9, 0, 0, 20)
     SuccessRateLabel.Text = "Success Rate: 0%"
@@ -763,7 +786,7 @@ function StudlandsFisher:setupGUI()
     SuccessRateLabel.BackgroundTransparency = 1
     SuccessRateLabel.TextXAlignment = Enum.TextXAlignment.Left
     SuccessRateLabel.Parent = MainPage
-    
+
     local RuntimeLabel = Instance.new("TextLabel")
     RuntimeLabel.Size = UDim2.new(0.9, 0, 0, 20)
     RuntimeLabel.Text = "Runtime: 00:00:00"
@@ -773,8 +796,7 @@ function StudlandsFisher:setupGUI()
     RuntimeLabel.BackgroundTransparency = 1
     RuntimeLabel.TextXAlignment = Enum.TextXAlignment.Left
     RuntimeLabel.Parent = MainPage
-    
-    -- Update stats loop
+
     task.spawn(function()
         while ScreenGui and ScreenGui.Parent do
             if self.Enabled then
@@ -783,25 +805,16 @@ function StudlandsFisher:setupGUI()
             task.wait(1)
         end
     end)
-    
+
     Pages["Main"] = MainPage
-    
+
     -- ==================== SETTINGS PAGE ====================
     local SettingsPage = createContentPage(ContentContainer, "Settings")
     local SettingsLayout = createListLayout(SettingsPage)
     SettingsLayout.Padding = UDim.new(0, 10)
-    
-    createSectionHeader(SettingsPage, "ROD CONFIG")
-    
-    createInputLabel(SettingsPage, "Rod Name:")
-    local RodInput = createTextBox(SettingsPage, CONFIG.RodName, "E.g., Golden Fishing Rod")
-    RodInput.FocusLost:Connect(function()
-        CONFIG.RodName = RodInput.Text
-        self:log("Rod set to: " .. CONFIG.RodName, "info")
-    end)
-    
+
     createSectionHeader(SettingsPage, "TIMING")
-    
+
     createInputLabel(SettingsPage, "Cast Cooldown (sec):")
     local CooldownInput = createTextBox(SettingsPage, tostring(CONFIG.CastCooldown), "E.g., 2")
     CooldownInput.FocusLost:Connect(function()
@@ -812,7 +825,7 @@ function StudlandsFisher:setupGUI()
             CooldownInput.Text = tostring(CONFIG.CastCooldown)
         end
     end)
-    
+
     createInputLabel(SettingsPage, "Click Delay (sec):")
     local ClickDelayInput = createTextBox(SettingsPage, tostring(CONFIG.ClickDelay), "E.g., 0.05")
     ClickDelayInput.FocusLost:Connect(function()
@@ -823,36 +836,36 @@ function StudlandsFisher:setupGUI()
             ClickDelayInput.Text = tostring(CONFIG.ClickDelay)
         end
     end)
-    
+
     createSectionHeader(SettingsPage, "CLICK METHOD")
-    
+
     local ClickMethodButton = createButton(SettingsPage, "Method: VIM", CONFIG.AccentColor)
     ClickMethodButton.MouseButton1Click:Connect(function()
         self.ClickMethod = (self.ClickMethod == "VIM") and "Direct" or "VIM"
         self:updateGUI()
     end)
-    
+
     createSectionHeader(SettingsPage, "SAFETY")
-    
+
     local StopOnFailButton = createButton(SettingsPage, "Stop On Fail: OFF", CONFIG.ToggleOffColor)
     StopOnFailButton.MouseButton1Click:Connect(function()
         self.StopOnFail = not self.StopOnFail
         self:updateGUI()
     end)
-    
+
     local DebugModeButton = createButton(SettingsPage, "Debug Mode: OFF", CONFIG.ToggleOffColor)
     DebugModeButton.MouseButton1Click:Connect(function()
         self.DebugMode = not self.DebugMode
         self:updateGUI()
     end)
-    
+
     createSectionHeader(SettingsPage, "TOOLS")
-    
+
     local InspectButton = createButton(SettingsPage, "Inspect GUI", CONFIG.InfoColor)
     InspectButton.MouseButton1Click:Connect(function()
         self:inspectGui()
     end)
-    
+
     local ResetStatsButton = createButton(SettingsPage, "Reset Stats", CONFIG.WarningColor)
     ResetStatsButton.MouseButton1Click:Connect(function()
         self.CastsTotal = 0
@@ -863,16 +876,16 @@ function StudlandsFisher:setupGUI()
         self:updateStats()
         self:log("Stats reset", "info")
     end)
-    
+
     Pages["Settings"] = SettingsPage
-    
+
     -- ==================== LOGS PAGE ====================
     local LogsPage = createContentPage(ContentContainer, "Logs")
     local LogsLayout = createListLayout(LogsPage)
     LogsLayout.Padding = UDim.new(0, 5)
-    
+
     createSectionHeader(LogsPage, "CONSOLE")
-    
+
     local LogText = Instance.new("TextLabel")
     LogText.Name = "LogText"
     LogText.Size = UDim2.new(0.95, 0, 0, 300)
@@ -885,10 +898,9 @@ function StudlandsFisher:setupGUI()
     LogText.TextYAlignment = Enum.TextYAlignment.Top
     LogText.Parent = LogsPage
     LogText.TextWrapped = true
-    
+
     Pages["Logs"] = LogsPage
-    
-    -- Store references
+
     self.MainGui = {
         ScreenGui = ScreenGui,
         MainFrame = MainFrame,
@@ -905,9 +917,10 @@ function StudlandsFisher:setupGUI()
             FishClickedLabel = FishClickedLabel,
             SuccessRateLabel = SuccessRateLabel,
             RuntimeLabel = RuntimeLabel,
+            RodInput = RodInput,
+            EquipButton = EquipButton,
         },
         SettingsPage = {
-            RodInput = RodInput,
             CooldownInput = CooldownInput,
             ClickDelayInput = ClickDelayInput,
             ClickMethodButton = ClickMethodButton,
@@ -918,12 +931,11 @@ function StudlandsFisher:setupGUI()
             LogText = LogText,
         }
     }
-    
-    -- Control handlers
+
     MinimizeButton.MouseButton1Click:Connect(function()
         self:setMinimizedState(not self.IsMinimized)
     end)
-    
+
     CloseButton.MouseButton1Click:Connect(function()
         self.Enabled = false
         if self.LoopThread then
@@ -931,7 +943,7 @@ function StudlandsFisher:setupGUI()
         end
         ScreenGui:Destroy()
     end)
-    
+
     self:setMinimizedState(self.IsMinimized)
     self:showTab(self.CurrentTab)
     self:updateGUI()
@@ -942,16 +954,16 @@ end
 function StudlandsFisher:showTab(tabName)
     self.CurrentTab = tabName
     self:updateGUI()
-    
+
     local contentContainer = self.MainGui.MainFrame:FindFirstChild("ContentContainer")
     if not contentContainer then return end
-    
+
     for _, page in pairs(contentContainer:GetChildren()) do
         if page:IsA("Frame") and page.Name:match("Page$") then
             page.Visible = false
         end
     end
-    
+
     if self.MainGui.Pages[tabName] then
         self.MainGui.Pages[tabName].Visible = true
         task.wait()
@@ -966,32 +978,31 @@ end
 function StudlandsFisher:setMinimizedState(isMinimized)
     self.IsMinimized = isMinimized
     if not self.MainGui or not self.MainGui.MainFrame then return end
-    
+
     local MainFrame = self.MainGui.MainFrame
     local ContentContainer = MainFrame:FindFirstChild("ContentContainer")
     local TabBar = MainFrame:FindFirstChild("TabBar")
-    
+
     if not ContentContainer or not TabBar then return end
-    
+
     ContentContainer.Visible = not isMinimized
     TabBar.Visible = not isMinimized
-    
+
     if isMinimized then
         MainFrame:TweenSize(UDim2.new(0, CONFIG.FrameWidth, 0, CONFIG.TitleBarHeight), "Out", "Quad", 0.2, true)
     else
         MainFrame:TweenSize(UDim2.new(0, CONFIG.FrameWidth, 0, self.InitialFrameHeight), "Out", "Quad", 0.2, true)
     end
-    
+
     self.MainGui.MinimizeButton.Text = isMinimized and "+" or "−"
 end
 
 function StudlandsFisher:updateGUI()
     if not self.MainGui then return end
-    
+
     local main = self.MainGui.MainPage
     local settings = self.MainGui.SettingsPage
-    
-    -- Main tab
+
     if self.Enabled then
         main.ToggleButton.Text = "FISHER: ON"
         main.ToggleButton.BackgroundColor3 = CONFIG.ToggleOnColor
@@ -999,24 +1010,22 @@ function StudlandsFisher:updateGUI()
         main.ToggleButton.Text = "FISHER: OFF"
         main.ToggleButton.BackgroundColor3 = CONFIG.ToggleOffColor
     end
-    
+
     main.AutoCastButton.Text = self.AutoCastEnabled and "Auto Cast: ON" or "Auto Cast: OFF"
     main.AutoCastButton.BackgroundColor3 = self.AutoCastEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
-    
+
     main.AutoSolveButton.Text = self.AutoSolveEnabled and "Auto Solve: ON" or "Auto Solve: OFF"
     main.AutoSolveButton.BackgroundColor3 = self.AutoSolveEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
-    
-    -- Settings tab
+
     settings.ClickMethodButton.Text = "Method: " .. self.ClickMethod
     settings.ClickMethodButton.BackgroundColor3 = self.ClickMethod == "VIM" and CONFIG.AccentColor or CONFIG.InfoColor
-    
+
     settings.StopOnFailButton.Text = self.StopOnFail and "Stop On Fail: ON" or "Stop On Fail: OFF"
     settings.StopOnFailButton.BackgroundColor3 = self.StopOnFail and CONFIG.ToggleOffColor or CONFIG.ToggleOffColor
-    
+
     settings.DebugModeButton.Text = self.DebugMode and "Debug Mode: ON" or "Debug Mode: OFF"
     settings.DebugModeButton.BackgroundColor3 = self.DebugMode and CONFIG.WarningColor or CONFIG.ToggleOffColor
-    
-    -- Tab highlights
+
     for tabName, tabButton in pairs(self.MainGui.Tabs) do
         if tabName == self.CurrentTab then
             tabButton.BackgroundColor3 = CONFIG.BackgroundColor
@@ -1033,4 +1042,4 @@ end
 -- ==================== EXECUTION ====================
 
 local fisher = StudlandsFisher:new()
-fisher:log("Studlands Fisher loaded. Click 'Inspect GUI' when minigame is open to detect UI structure.", "info")
+fisher:log("Studlands Fisher loaded. Enter rod name and click Equip, then enable fisher.", "info")
