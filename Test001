@@ -19,7 +19,7 @@ local CONFIG = {
     DefaultMode = "Combat", 
     FarmSpeed = 0.0001,
     SpecialAttackCooldown = 0.0001,
-    FlySpeed = 50,
+    FlySpeed = 80,
     
     FrameWidth = 280, 
     TitleBarHeight = 40, 
