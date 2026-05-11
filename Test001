@@ -17,7 +17,7 @@ MultiGrinder.__index = MultiGrinder
 local CONFIG = {
     ScriptName = "Studlands Grinder",
     DefaultMode = "Combat", 
-    FarmSpeed = 0.0001,
+    FarmSpeed = 0.25,
     SpecialAttackCooldown = 0.0001,
     FlySpeed = 80,
     
