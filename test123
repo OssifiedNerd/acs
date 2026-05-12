@@ -1,434 +1,1868 @@
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local RunService = game:GetService("RunService")
+if not LocalPlayer then return end
+local Workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualUser = game:GetService("VirtualUser")
+local Camera = Workspace.CurrentCamera
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local RunService = game:GetService("RunService")
 
-local StudlandsFisher = {}
-StudlandsFisher.__index = StudlandsFisher
+local MultiGrinder = {}
+MultiGrinder.__index = MultiGrinder
 
 -- CONFIGURATION - Modern Dark Theme
 local CONFIG = {
-    ScriptName = "Studlands Fisher",
-
-    FrameWidth = 300,
-    TitleBarHeight = 40,
-    TabBarHeight = 35,
-    ContentAreaHeight = 420,
+    ScriptName = "Studlands Grinder",
+    DefaultMode = "Combat", 
+    FarmSpeed = 0.25,
+    SpecialAttackCooldown = 0.0001,
+    FlySpeed = 80,
+    
+    FrameWidth = 280, 
+    TitleBarHeight = 40, 
+    TabBarHeight = 35, 
+    ContentAreaHeight = 400,
     MainFrameCornerRadius = 12,
-    ButtonHeight = 32,
+    ButtonHeight = 32, 
     ButtonCornerRadius = 8,
     InputHeight = 32,
     SectionSpacing = 15,
 
     -- Modern Color Palette
-    BackgroundColor = Color3.fromRGB(22, 22, 30),
-    TitleBarColor = Color3.fromRGB(30, 30, 42),
-    TabBarColor = Color3.fromRGB(28, 28, 38),
-    AccentColor = Color3.fromRGB(0, 170, 255),
-    ToggleOnColor = Color3.fromRGB(0, 200, 100),
-    ToggleOffColor = Color3.fromRGB(200, 60, 60),
-    WarningColor = Color3.fromRGB(255, 150, 0),
-    InfoColor = Color3.fromRGB(100, 150, 255),
+    BackgroundColor = Color3.fromRGB(22, 22, 30), 
+    TitleBarColor = Color3.fromRGB(30, 30, 42), 
+    TabBarColor = Color3.fromRGB(28, 28, 38), 
+    AccentColor = Color3.fromRGB(0, 170, 255), 
+    ToggleOnColor = Color3.fromRGB(0, 200, 100), 
+    ToggleOffColor = Color3.fromRGB(200, 60, 60), 
+    SpecialAttackColor = Color3.fromRGB(255, 150, 0),
+    DistanceColor = Color3.fromRGB(100, 150, 255),
     InputBackgroundColor = Color3.fromRGB(35, 35, 48),
     SectionHeaderColor = Color3.fromRGB(150, 150, 170),
 
-    CloseButtonBaseColor = Color3.fromRGB(200, 60, 60),
-    CloseButtonHoverColor = Color3.fromRGB(220, 80, 80),
-    MinimizeButtonBaseColor = Color3.fromRGB(80, 80, 100),
-    MinimizeButtonHoverColor = Color3.fromRGB(110, 110, 130),
+    CloseButtonBaseColor = Color3.fromRGB(200, 60, 60), 
+    CloseButtonHoverColor = Color3.fromRGB(220, 80, 80), 
+    MinimizeButtonBaseColor = Color3.fromRGB(80, 80, 100), 
+    MinimizeButtonHoverColor = Color3.fromRGB(110, 110, 130), 
 
-    -- Fisher Settings
-    RodName = "Golden Fishing Rod",
-    CastCooldown = 2,
-    ClickDelay = 0.05,
-    MaxWaitTime = 10,
+    Combat = {
+        ToolName = "Unstable Cylindery Hammer", 
+        TargetNames = {"Crab Champion"}, 
+        TeleportOffset = Vector3.new(0, 5, 5),
+        CombatPriorityAreaScanRadius = 50, 
+        CombatPriorityAreaScanTime = 3,
+    },
 
-    -- GUI Detection (adjust after running inspector)
-    FishingGuiPatterns = {"Fishing", "Minigame", "Fish"},
-    FishButtonPatterns = {"Fish", "Click"},
+    Mining = {
+        ToolName = "Eternium Pickaxe",
+        TargetNames = {"Ore"},
+        TeleportOffset = Vector3.new(0, 3, 2),
+        MiningPriorityAreaScanRadius = 30, 
+        MiningPriorityAreaScanTime = 3,
+    },
+    
+    Event = {
+        PriorityAreaScanRadius = 50,
+        PriorityAreaScanTime = 3,
+    },
+    
+    -- Height offset defaults
+    CombatHeightOffset = 5,
+    MiningHeightOffset = 3,
 }
 
 local function getRemotes()
     local remotes = {}
     local success, err = pcall(function()
         local clientRemotes = ReplicatedStorage:WaitForChild("ClientRemotes", 5)
-        remotes.EquipItem = clientRemotes:WaitForChild("Inventory", 5):WaitForChild("EquipItem", 5)
-        remotes.UseItem = clientRemotes:WaitForChild("Character", 5):WaitForChild("UseItem", 5)
+        remotes.EquipItem = clientRemotes:WaitForChild("Inventory"):WaitForChild("EquipItem", 5)
+        remotes.UseItem = clientRemotes:WaitForChild("Character"):WaitForChild("UseItem", 5)
+        remotes.Block = clientRemotes:WaitForChild("Character"):WaitForChild("Block", 5)
+        remotes.DialogEvent = clientRemotes:WaitForChild("Character"):WaitForChild("DialogEvent", 5)
     end)
-
+    
     if not success then
-        warn("[Fisher] Failed to get remotes: " .. tostring(err))
+        warn("[Multi-Bot] Failed to get remotes: " .. tostring(err))
     end
-
+    
     return remotes
 end
 
-function StudlandsFisher:new()
+-- NEW: Sell Remote Finder
+local function getSellRemote()
+    local remote = nil
+    local success = pcall(function()
+        local clientRemotes = ReplicatedStorage:WaitForChild("ClientRemotes", 5)
+        remote = clientRemotes:WaitForChild("Inventory"):WaitForChild("SellItem", 3)
+    end)
+    if not success or not remote then
+        for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+            if (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) and string.find(string.lower(obj.Name), "sell") then
+                remote = obj
+                break
+            end
+        end
+    end
+    return remote
+end
+
+function MultiGrinder:new()
     local self = setmetatable({
-        Enabled = false,
-        IsFishing = false,
-        CurrentGui = nil,
-        LoopThread = nil,
-        MainGui = nil,
-        CurrentTab = "Main",
+        Enabled = false, 
+        Mode = CONFIG.DefaultMode,
         Remotes = getRemotes(),
+        HttpService = HttpService,
+        SettingsFile = "MultiBot_Settings.json",
+        MainGui = nil,
+        CurrentTab = "General", 
+        
+        CurrentTarget = nil, 
+        CurrentTargetIdentifier = nil, 
+        EquippedToolName = nil, 
+        
+        CombatToolName = CONFIG.Combat.ToolName,
+        CombatTargetNames = table.concat(CONFIG.Combat.TargetNames, ", "), 
+        
+        -- NEW: 4 Mining Tools
+        MiningToolNames = {CONFIG.Mining.ToolName, "", "", ""},
+        CurrentMiningToolIndex = 1,
+        LastToolWarningTime = 0,
+        
+        MiningTargetNames = table.concat(CONFIG.Mining.TargetNames, ", "),
+        
+        OriginalCameraCFrame = nil, 
+        IgnoredTargets = {},
+        TargetAcquiredTime = nil, 
+        AutoIgnoreEnabled = true, 
+        
+        LastKnownPosition = nil,
+        TeleportOnRespawnEnabled = true,
+        AutoBlockEnabled = false,
+        
+        SpecialAttackEnabled = false,
+        SpecialAttackThread = nil,
+        
+        SafeDistanceEnabled = false,
+        CombatSafeDistance = 10,
+        MiningSafeDistance = 1,
+        MiningHitboxMode = false,
 
-        -- Stats
-        CastsTotal = 0,
-        CastsSuccess = 0,
-        CastsFailed = 0,
-        FishClickedTotal = 0,
-        StartTime = nil,
+        PriorityAreas = {}, 
+        PriorityAreaEnabled = false,
+        CurrentPriorityAreaIndex = 1,
+        PriorityAreaScanTimer = 0,
+        PriorityAreaTarget = nil, 
+        CombatPriorityAreaScanRadius = CONFIG.Combat.CombatPriorityAreaScanRadius,
+        CombatPriorityAreaScanTime = CONFIG.Combat.CombatPriorityAreaScanTime,
 
-        -- Settings
-        AutoCastEnabled = true,
-        AutoSolveEnabled = true,
-        ClickMethod = "VIM",
-        DebugMode = false,
-        StopOnFail = false,
+        MiningPriorityAreas = {},
+        MiningPriorityAreaEnabled = false,
+        CurrentMiningPriorityAreaIndex = 1,
+        MiningPriorityAreaScanTimer = 0,
+        MiningPriorityAreaTarget = nil,
+        MiningPriorityAreaScanRadius = CONFIG.Mining.MiningPriorityAreaScanRadius,
+        MiningPriorityAreaScanTime = CONFIG.Mining.MiningPriorityAreaScanTime,
 
-        -- UI State
         UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)),
         IsMinimized = false,
-
-        -- Logs
-        Logs = {},
-        MaxLogs = 50,
-
-    }, StudlandsFisher)
+        
+        TargetCache = {},
+        LastSearchTime = 0,
+        SearchCooldown = 0.3,
+        LastAttackTime = 0,
+        AttackCooldown = 0.1,
+        LastMiningAngle = 0,
+        
+        -- Movement
+        NoclipEnabled = false,
+        FlyEnabled = false,
+        FlyBodyGyro = nil,
+        FlyBodyVelocity = nil,
+        NoclipConnection = nil,
+        
+        -- Height Offset
+        HeightOffsetEnabled = false,
+        CombatHeightOffset = CONFIG.CombatHeightOffset,
+        MiningHeightOffset = CONFIG.MiningHeightOffset,
+        
+        -- Money Farm
+        MoneyFarmEnabled = false,
+        MoneyFarmConnection = nil,
+        MoneyFarmTeleportLocation = nil,
+        MoneyFarmLastReset = 0,
+        MoneyFarmResetInterval = 1800, -- 30 minutes
+        
+        -- Fly Speed
+        FlySpeed = CONFIG.FlySpeed,
+        
+        -- Seller
+        SellRemote = getSellRemote(),
+        SellerEnabled = false,
+        SellerItemName = "Crystal",
+        SellerAmount = 1,
+        SellerCooldown = 0.05,
+        SellerThread = nil,
+        TotalSold = 0,
+        
+        -- NEW: Event System
+        EventMode = false,
+        EventStartKeyword = "",
+        EventEndKeyword = "",
+        EventTargetNames = table.concat(CONFIG.Combat.TargetNames, ", "),
+        EventPriorityAreas = {},
+        EventPriorityAreaEnabled = false,
+        CurrentEventAreaIndex = 1,
+        EventAreaScanTimer = 0,
+        EventAreaTarget = nil,
+        EventPriorityAreaScanRadius = CONFIG.Event.PriorityAreaScanRadius,
+        EventPriorityAreaScanTime = CONFIG.Event.PriorityAreaScanTime,
+        PreEventState = {},
+        
+    }, MultiGrinder)
 
     self.InitialFrameHeight = CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight
-    self:setupGUI()
+    self:LoadSettings()
+    self:SetupAntiAfk()
+    self:SetupToolWarningDetection()
+    self:SetupChatDetection()
+
+    LocalPlayer.CharacterAdded:Connect(function(character)
+        task.wait(0.5)
+        if self.Enabled and self.TeleportOnRespawnEnabled and self.LastKnownPosition then
+            local newHrp = character:WaitForChild("HumanoidRootPart", 2)
+            if newHrp then
+                newHrp.CFrame = CFrame.new(self.LastKnownPosition)
+            end
+        end
+        
+        -- Re-enable features if they were active
+        if self.NoclipEnabled then
+            task.delay(0.5, function()
+                self:ToggleNoclip(true)
+            end)
+        end
+        if self.FlyEnabled then
+            task.delay(0.5, function()
+                self:ToggleFly(true)
+            end)
+        end
+        if self.MoneyFarmEnabled then
+            task.delay(0.5, function()
+                self:StopMoneyFarm()
+                self:StartMoneyFarm()
+            end)
+        end
+        if self.SellerEnabled then
+            task.delay(0.5, function()
+                self:StopSelling()
+                self:StartSelling()
+            end)
+        end
+        
+        self.EquippedToolName = nil 
+        self.CurrentTarget = nil
+        self.CurrentTargetIdentifier = nil 
+        self.TargetAcquiredTime = nil 
+        self.PriorityAreaTarget = nil 
+        self.MiningPriorityAreaTarget = nil
+        self.EventAreaTarget = nil
+        self.CurrentMiningToolIndex = 1
+        
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+        if not playerGui:FindFirstChild("MultiBotGui") then
+            self:setupGUI()
+            self:updateGUI()
+        end
+    end)
+
     return self
 end
 
--- ==================== CORE FISHING LOGIC ====================
-
-function StudlandsFisher:equipRod(rodName)
-    if not self.Remotes.EquipItem then
-        self:log("EquipItem remote not found", "error")
-        return false
-    end
-
-    local success = pcall(function()
-        self.Remotes.EquipItem:InvokeServer(rodName)
+function MultiGrinder:SetupAntiAfk()
+    LocalPlayer.Idled:Connect(function()
+        VirtualUser:Button2Down(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
+        task.wait(1)
+        VirtualUser:Button2Up(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
     end)
+end
 
-    if success then
-        self:log("Equipped: " .. rodName, "success")
-        return true
+-- NEW: Tool Warning Detection
+function MultiGrinder:SetupToolWarningDetection()
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    local startupTime = tick()
+    
+    local function checkWarning(obj)
+        if not (obj:IsA("TextLabel") or obj:IsA("TextButton")) then return end
+        
+        local function handle()
+            if tick() - startupTime < 2 then return end -- Grace period on load
+            if string.find(obj.Text, "You need a better or different tool") then
+                self:HandleToolWarning()
+            end
+        end
+        
+        handle()
+        obj:GetPropertyChangedSignal("Text"):Connect(handle)
+        obj:GetPropertyChangedSignal("Visible"):Connect(function()
+            if obj.Visible then handle() end
+        end)
+    end
+    
+    for _, desc in ipairs(playerGui:GetDescendants()) do
+        checkWarning(desc)
+    end
+    
+    playerGui.DescendantAdded:Connect(checkWarning)
+end
+
+function MultiGrinder:HandleToolWarning()
+    if tick() - self.LastToolWarningTime < 0.8 then return end
+    self.LastToolWarningTime = tick()
+    
+    if self.Mode ~= "Mining" then return end
+    
+    local nextIndex = self.CurrentMiningToolIndex + 1
+    while nextIndex <= 4 do
+        local toolName = self.MiningToolNames[nextIndex]
+        if toolName and toolName ~= "" then
+            break
+        end
+        nextIndex = nextIndex + 1
+    end
+    
+    if nextIndex > 4 then
+        print("[Multi-Bot] No valid tool found for target, ignoring.")
+        if self.CurrentTargetIdentifier then
+            self.IgnoredTargets[self.CurrentTargetIdentifier] = true
+        end
+        self.CurrentTarget = nil
+        self.CurrentTargetIdentifier = nil
+        self.CurrentMiningToolIndex = 1
+        self.EquippedToolName = nil
+        restoreCamera(self)
+        self:updateGUI()
     else
-        self:log("Failed to equip: " .. rodName, "error")
-        return false
+        self.CurrentMiningToolIndex = nextIndex
+        self.EquippedToolName = nil -- Force re-equip next loop
+        print("[Multi-Bot] Tool warning detected, switching to:", self.MiningToolNames[nextIndex])
     end
 end
 
-function StudlandsFisher:getRod()
+-- NEW: Chat Detection for Events
+function MultiGrinder:SetupChatDetection()
+    local success = pcall(function()
+        local TextChatService = game:GetService("TextChatService")
+        
+        local function hookChannel(channel)
+            if not channel:IsA("TextChannel") then return end
+            channel.MessageReceived:Connect(function(textChatMessage)
+                local text = textChatMessage.Text or ""
+                if self.EventStartKeyword ~= "" and string.find(text, self.EventStartKeyword) then
+                    task.spawn(function() self:StartEventMode() end)
+                end
+                if self.EventEndKeyword ~= "" and string.find(text, self.EventEndKeyword) then
+                    task.spawn(function() self:EndEventMode() end)
+                end
+            end)
+        end
+        
+        for _, channel in ipairs(TextChatService.TextChannels:GetChildren()) do
+            hookChannel(channel)
+        end
+        
+        TextChatService.TextChannels.ChildAdded:Connect(hookChannel)
+    end)
+    
+    if not success then
+        warn("[Multi-Bot] TextChatService detection failed, trying legacy...")
+        local Players = game:GetService("Players")
+        Players.PlayerChatted:Connect(function(player, message)
+            if self.EventStartKeyword ~= "" and string.find(message, self.EventStartKeyword) then
+                self:StartEventMode()
+            end
+            if self.EventEndKeyword ~= "" and string.find(message, self.EventEndKeyword) then
+                self:EndEventMode()
+            end
+        end)
+    end
+end
+
+-- NEW: Event Mode Control
+function MultiGrinder:StartEventMode()
+    if self.EventMode then return end
+    print("[Multi-Bot] Event started! Switching to event mode.")
+    
+    self.PreEventState = {
+        Mode = self.Mode,
+        Enabled = self.Enabled,
+        PriorityAreaEnabled = self.PriorityAreaEnabled,
+        MiningPriorityAreaEnabled = self.MiningPriorityAreaEnabled,
+        MoneyFarmEnabled = self.MoneyFarmEnabled,
+        SellerEnabled = self.SellerEnabled,
+    }
+    
+    -- Pause other systems
+    if self.MoneyFarmEnabled then
+        self:StopMoneyFarm()
+    end
+    if self.SellerEnabled then
+        self:StopSelling()
+    end
+    
+    self.EventMode = true
+    self.Mode = "Combat"
+    self.Enabled = true
+    self.PriorityAreaEnabled = false
+    self.MiningPriorityAreaEnabled = false
+    
+    self.CurrentEventAreaIndex = 1
+    self.EventAreaScanTimer = 0
+    self.EventAreaTarget = nil
+    self.CurrentTarget = nil
+    self.CurrentTargetIdentifier = nil
+    self.TargetAcquiredTime = nil
+    self.LastMiningAngle = 0
+    restoreCamera(self)
+    self:updateGUI()
+end
+
+function MultiGrinder:EndEventMode()
+    if not self.EventMode then return end
+    print("[Multi-Bot] Event ended! Restoring previous mode.")
+    
+    self.EventMode = false
+    self.Mode = self.PreEventState.Mode or "Combat"
+    self.Enabled = self.PreEventState.Enabled or false
+    self.PriorityAreaEnabled = self.PreEventState.PriorityAreaEnabled or false
+    self.MiningPriorityAreaEnabled = self.PreEventState.MiningPriorityAreaEnabled or false
+    
+    -- Restore other systems
+    if self.PreEventState.MoneyFarmEnabled then
+        self:StartMoneyFarm()
+    end
+    if self.PreEventState.SellerEnabled then
+        self:StartSelling()
+    end
+    
+    self.EventAreaTarget = nil
+    self.EventAreaScanTimer = 0
+    self.CurrentEventAreaIndex = 1
+    self.CurrentTarget = nil
+    self.CurrentTargetIdentifier = nil
+    self.TargetAcquiredTime = nil
+    restoreCamera(self)
+    self:updateGUI()
+end
+
+function MultiGrinder:StartSpecialAttack()
+    if self.SpecialAttackThread then return end
+    
+    self.SpecialAttackThread = task.spawn(function()
+        while self.SpecialAttackEnabled do
+            local success, err = pcall(function()
+                local char = LocalPlayer.Character
+                if not char then return end
+                
+                local toolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolNames[1]
+                local tool = char:FindFirstChild(toolName)
+                
+                if tool and self.Remotes.UseItem then
+                    local args = {
+                        [1] = tool,
+                        [2] = true,
+                        [5] = 1.1039999771118163
+                    }
+                    self.Remotes.UseItem:FireServer(unpack(args))
+                end
+            end)
+            
+            if not success then
+                warn("[Multi-Bot] Special attack error: " .. tostring(err))
+            end
+            
+            task.wait(CONFIG.SpecialAttackCooldown)
+        end
+        
+        self.SpecialAttackThread = nil
+    end)
+end
+
+function MultiGrinder:StopSpecialAttack()
+    self.SpecialAttackEnabled = false
+end
+
+-- MONEY FARM FUNCTIONALITY
+function MultiGrinder:StartMoneyFarm()
+    if self.MoneyFarmConnection then return end
+    
+    if self.MoneyFarmTeleportLocation then
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            hrp.CFrame = self.MoneyFarmTeleportLocation
+        end
+    end
+    
+    self.MoneyFarmLastReset = tick()
+    
+    self.MoneyFarmConnection = RunService.Heartbeat:Connect(function()
+        local success, err = pcall(function()
+            if not self.Remotes.DialogEvent then return end
+            
+            local args = {
+                [1] = workspace.NPCs:FindFirstChild("Blacksmith Cubey"),
+                [2] = "StartQuest",
+                [3] = {
+                    ["QuestName"] = "Find Blacksmith's Crystal"
+                }
+            }
+            
+            if args[1] then
+                self.Remotes.DialogEvent:FireServer(unpack(args))
+            end
+        end)
+        
+        if not success then
+            warn("[Multi-Bot] Money Farm error: " .. tostring(err))
+        end
+    end)
+    
+    -- 30 minute auto-reset loop
+    self.MoneyFarmResetThread = task.spawn(function()
+        while self.MoneyFarmEnabled do
+            task.wait(1)
+            if not self.MoneyFarmEnabled then break end
+            if tick() - self.MoneyFarmLastReset >= self.MoneyFarmResetInterval then
+                self.MoneyFarmLastReset = tick()
+                local char = LocalPlayer.Character
+                if char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        hum.Health = 0
+                    end
+                end
+            end
+        end
+    end)
+end
+
+function MultiGrinder:StopMoneyFarm()
+    if self.MoneyFarmConnection then
+        self.MoneyFarmConnection:Disconnect()
+        self.MoneyFarmConnection = nil
+    end
+    if self.MoneyFarmResetThread then
+        task.cancel(self.MoneyFarmResetThread)
+        self.MoneyFarmResetThread = nil
+    end
+end
+
+-- SELLER FUNCTIONALITY
+function MultiGrinder:StartSelling()
+    if self.SellerThread then return end
+    
+    self.SellerThread = task.spawn(function()
+        while self.SellerEnabled do
+            local success, err = pcall(function()
+                if not self.SellRemote then
+                    self.SellRemote = getSellRemote()
+                    if not self.SellRemote then return end
+                end
+                
+                local args = {
+                    [1] = self.SellerItemName,
+                    [2] = self.SellerAmount
+                }
+                
+                if self.SellRemote:IsA("RemoteFunction") then
+                    self.SellRemote:InvokeServer(unpack(args))
+                else
+                    self.SellRemote:FireServer(unpack(args))
+                end
+                
+                self.TotalSold = self.TotalSold + self.SellerAmount
+            end)
+            
+            if not success then
+                warn("[Multi-Bot] Sell error: " .. tostring(err))
+                task.wait(0.5)
+            else
+                task.wait(self.SellerCooldown)
+            end
+        end
+        
+        self.SellerThread = nil
+    end)
+end
+
+function MultiGrinder:StopSelling()
+    self.SellerEnabled = false
+    if self.SellerThread then
+        task.cancel(self.SellerThread)
+        self.SellerThread = nil
+    end
+end
+
+-- NOCLIP FUNCTIONALITY
+function MultiGrinder:ToggleNoclip(enabled)
+    self.NoclipEnabled = enabled
+    
+    if enabled then
+        self.NoclipConnection = RunService.Stepped:Connect(function()
+            if not self.NoclipEnabled then return end
+            local char = LocalPlayer.Character
+            if char then
+                for _, part in pairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    else
+        if self.NoclipConnection then
+            self.NoclipConnection:Disconnect()
+            self.NoclipConnection = nil
+        end
+        local char = LocalPlayer.Character
+        if char then
+            for _, part in pairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+end
+
+-- FLY FUNCTIONALITY
+function MultiGrinder:ToggleFly(enabled)
+    self.FlyEnabled = enabled
+    
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    if enabled then
+        self.FlyBodyGyro = Instance.new("BodyGyro")
+        self.FlyBodyGyro.P = 9e4
+        self.FlyBodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        self.FlyBodyGyro.CFrame = hrp.CFrame
+        self.FlyBodyGyro.Parent = hrp
+        
+        self.FlyBodyVelocity = Instance.new("BodyVelocity")
+        self.FlyBodyVelocity.Velocity = Vector3.new(0, 0, 0)
+        self.FlyBodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        self.FlyBodyVelocity.Parent = hrp
+        
+        task.spawn(function()
+            while self.FlyEnabled and self.FlyBodyGyro and self.FlyBodyVelocity do
+                local currentCamera = Workspace.CurrentCamera
+                local moveDirection = Vector3.new(0, 0, 0)
+                
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+                    moveDirection = moveDirection + currentCamera.CFrame.LookVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+                    moveDirection = moveDirection - currentCamera.CFrame.LookVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+                    moveDirection = moveDirection - currentCamera.CFrame.RightVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+                    moveDirection = moveDirection + currentCamera.CFrame.RightVector
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+                    moveDirection = moveDirection + Vector3.new(0, 1, 0)
+                end
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+                    moveDirection = moveDirection - Vector3.new(0, 1, 0)
+                end
+                
+                if moveDirection.Magnitude > 0 then
+                    moveDirection = moveDirection.Unit * self.FlySpeed
+                end
+                
+                if self.FlyBodyVelocity then
+                    self.FlyBodyVelocity.Velocity = moveDirection
+                end
+                if self.FlyBodyGyro then
+                    self.FlyBodyGyro.CFrame = currentCamera.CFrame
+                end
+                
+                task.wait(0.01)
+            end
+        end)
+    else
+        if self.FlyBodyGyro then
+            self.FlyBodyGyro:Destroy()
+            self.FlyBodyGyro = nil
+        end
+        if self.FlyBodyVelocity then
+            self.FlyBodyVelocity:Destroy()
+            self.FlyBodyVelocity = nil
+        end
+    end
+end
+
+function MultiGrinder:getHumanoidRootPart()
     local char = LocalPlayer.Character
     if not char then return nil end
-    return char:FindFirstChild(CONFIG.RodName)
+    return char:FindFirstChild("HumanoidRootPart")
 end
 
-function StudlandsFisher:castRod()
-    local rod = self:getRod()
-    if not rod then
-        self:log("Rod not found in character: " .. CONFIG.RodName, "error")
-        self:log("Make sure rod is equipped or enable Auto Equip", "warning")
-        return false
+function MultiGrinder:getTargetNames(mode)
+    local targetString
+    if mode == "Combat" then
+        targetString = self.CombatTargetNames
+    elseif mode == "Mining" then
+        targetString = self.MiningTargetNames
+    elseif mode == "Event" then
+        targetString = self.EventTargetNames
     end
-
-    if not self.Remotes.UseItem then
-        self:log("UseItem remote not found", "error")
-        return false
+    
+    local names = {}
+    if not targetString then return names end
+    for name in string.gmatch(targetString, "[^,]+") do
+        names[#names + 1] = name:gsub("^%s*(.-)%s*$", "%1")
     end
+    return names
+end
 
+function MultiGrinder:findClosestTarget(position, names)
+    local currentTime = tick()
+    if currentTime - self.LastSearchTime < self.SearchCooldown and self.TargetCache.LastPosition then
+        local dist = (position - self.TargetCache.LastPosition).Magnitude
+        if dist < 5 then
+            return self.TargetCache.Target, self.TargetCache.Key
+        end
+    end
+    
+    local closestTargetPart = nil 
+    local closestTargetKey = nil 
+    local minDistance = math.huge
+    
+    local descendants = Workspace:GetDescendants()
+    for _, obj in ipairs(descendants) do
+        for _, name in ipairs(names) do
+            if string.find(string.lower(obj.Name), string.lower(name)) then
+                local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
+                if targetPart and targetPart.Parent ~= LocalPlayer.Character then
+                    local parent = targetPart.Parent
+                    local humanoid = parent:FindFirstChildOfClass("Humanoid")
+                    
+                    if humanoid and humanoid.Health <= 0 then
+                        continue
+                    end
+                    
+                    local targetKey = humanoid and parent or targetPart
+                    
+                    if not self.IgnoredTargets[targetKey] then
+                        local dist = (targetPart.Position - position).Magnitude
+                        if dist < minDistance then
+                            minDistance = dist
+                            closestTargetPart = targetPart 
+                            closestTargetKey = targetKey 
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    self.LastSearchTime = currentTime
+    self.TargetCache = {
+        Target = closestTargetPart,
+        Key = closestTargetKey,
+        LastPosition = position
+    }
+    
+    return closestTargetPart, closestTargetKey
+end
+
+-- NEW: Find closest target within a radius (for events)
+function MultiGrinder:findClosestTargetInArea(position, radius, names)
+    local closestTargetPart = nil 
+    local closestTargetKey = nil 
+    local minDistance = math.huge
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        for _, name in ipairs(names) do
+            if string.find(string.lower(obj.Name), string.lower(name)) then
+                local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
+                if targetPart and targetPart.Parent ~= LocalPlayer.Character then
+                    local parent = targetPart.Parent
+                    local humanoid = parent:FindFirstChildOfClass("Humanoid")
+                    
+                    if humanoid and humanoid.Health <= 0 then
+                        continue
+                    end
+                    
+                    local targetKey = humanoid and parent or targetPart
+                    
+                    if not self.IgnoredTargets[targetKey] then
+                        local dist = (targetPart.Position - position).Magnitude
+                        if dist <= radius and dist < minDistance then
+                            minDistance = dist
+                            closestTargetPart = targetPart 
+                            closestTargetKey = targetKey 
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closestTargetPart, closestTargetKey
+end
+
+function MultiGrinder:findClosestMobInArea(position, radius)
+    local closestTargetPart = nil
+    local closestTargetKey = nil
+    local minDistance = math.huge
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Humanoid") and obj.Health > 0 then
+            local parentModel = obj.Parent
+            if parentModel and parentModel ~= LocalPlayer.Character then
+                local hrp = parentModel:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    if not self.IgnoredTargets[parentModel] then
+                        local dist = (hrp.Position - position).Magnitude
+                        if dist <= radius and dist < minDistance then
+                            minDistance = dist
+                            closestTargetPart = hrp
+                            closestTargetKey = parentModel
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closestTargetPart, closestTargetKey
+end
+
+function MultiGrinder:findClosestResourceInArea(position, radius, names)
+    local closestTargetPart = nil
+    local closestTargetKey = nil
+    local minDistance = math.huge
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        for _, name in ipairs(names) do
+            if string.lower(obj.Name) == string.lower(name) then 
+                local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
+                if targetPart and targetPart.Parent ~= LocalPlayer.Character then
+                    local parentModel = targetPart.Parent
+                    if not parentModel:FindFirstChildOfClass("Humanoid") then
+                        if not self.IgnoredTargets[targetPart] then
+                            local dist = (targetPart.Position - position).Magnitude
+                            if dist <= radius and dist < minDistance then
+                                minDistance = dist
+                                closestTargetPart = targetPart
+                                closestTargetKey = targetPart
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closestTargetPart, closestTargetKey
+end
+
+function MultiGrinder:simulateAction(toolInstance)
+    if not self.Remotes.UseItem or not toolInstance then return end
+    
+    local currentTime = tick()
+    if currentTime - self.LastAttackTime < self.AttackCooldown then
+        return
+    end
+    self.LastAttackTime = currentTime
+    
+    local args = {
+        [1] = toolInstance,
+        [2] = false,
+        [5] = 1.1039999771118163
+    }
+    
+    pcall(function()
+        self.Remotes.UseItem:FireServer(unpack(args))
+    end)
+end
+
+function MultiGrinder:equipTool(toolName)
+    if not self.Remotes.EquipItem then return false end
+    
     local success = pcall(function()
-        self.Remotes.UseItem:FireServer(rod, false)
+        self.Remotes.EquipItem:InvokeServer(toolName)
     end)
-
+    
     if success then
-        self.CastsTotal = self.CastsTotal + 1
-        self:log("Casted rod", "info")
-        self:updateStats()
+        self.EquippedToolName = toolName
         return true
+    end
+    return false
+end
+
+function MultiGrinder:holdKey(keyCode, duration)
+    VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+    task.wait(duration)
+    VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+end
+
+local function restoreCamera(self)
+    if self.OriginalCameraCFrame then 
+        Camera.CFrame = self.OriginalCameraCFrame 
+        self.OriginalCameraCFrame = nil 
+    end
+end
+
+function MultiGrinder:calculateTeleportPosition(targetPosition, currentPosition, mode)
+    local finalPos
+
+    if not self.SafeDistanceEnabled then
+        local offset = (mode == "Combat") and CONFIG.Combat.TeleportOffset or CONFIG.Mining.TeleportOffset
+        finalPos = targetPosition + offset
     else
-        self.CastsFailed = self.CastsFailed + 1
-        self:log("Failed to cast rod", "error")
-        self:updateStats()
+        if mode == "Combat" then
+            local direction = (currentPosition - targetPosition)
+            direction = Vector3.new(direction.X, 0, direction.Z)
+            
+            if direction.Magnitude < 0.1 then
+                direction = Vector3.new(math.random(-100, 100), 0, math.random(-100, 100))
+            end
+            
+            direction = direction.Unit
+            local safePosition = targetPosition + (direction * self.CombatSafeDistance)
+            safePosition = safePosition + Vector3.new(0, 5, 0)
+            
+            finalPos = safePosition
+        else
+            local baseDistance = self.MiningSafeDistance
+            local baseHeight = 3
+            
+            if self.MiningHitboxMode then
+                self.LastMiningAngle = self.LastMiningAngle + 45
+                if self.LastMiningAngle >= 360 then self.LastMiningAngle = 0 end
+                
+                local rad = math.rad(self.LastMiningAngle)
+                local offsetX = math.cos(rad) * baseDistance
+                local offsetZ = math.sin(rad) * baseDistance
+                
+                finalPos = targetPosition + Vector3.new(offsetX, baseHeight, offsetZ)
+            else
+                local direction = (currentPosition - targetPosition)
+                direction = Vector3.new(direction.X, 0, direction.Z)
+                
+                if direction.Magnitude < 0.1 then
+                    direction = Vector3.new(0, 0, 1)
+                else
+                    direction = direction.Unit
+                end
+                
+                finalPos = targetPosition + (direction * baseDistance) + Vector3.new(0, baseHeight, 0)
+            end
+        end
+    end
+
+    if self.HeightOffsetEnabled then
+        local height = (mode == "Combat") and self.CombatHeightOffset or self.MiningHeightOffset
+        finalPos = finalPos + Vector3.new(0, height, 0)
+    end
+
+    return finalPos
+end
+
+function MultiGrinder:executePriorityAreaCombat(hrp)
+    local toolName = self.CombatToolName
+    
+    local currentAreaCFrame = self.PriorityAreas[self.CurrentPriorityAreaIndex]
+    if not currentAreaCFrame then
+        self.CurrentPriorityAreaIndex = 1
+        currentAreaCFrame = self.PriorityAreas[self.CurrentPriorityAreaIndex]
+    end
+
+    self.LastKnownPosition = hrp.Position
+    hrp.CFrame = currentAreaCFrame
+
+    local target = self.PriorityAreaTarget
+    local targetIsValid = target and target.Parent and target.Parent:FindFirstChildOfClass("Humanoid") and target.Parent:FindFirstChildOfClass("Humanoid").Health > 0
+    
+    if not targetIsValid then
+        self.PriorityAreaTarget = nil
+        self.CurrentTargetIdentifier = nil 
+        
+        local newTarget, newTargetKey = self:findClosestMobInArea(hrp.Position, self.CombatPriorityAreaScanRadius)
+        
+        if newTarget then
+            self.PriorityAreaTarget = newTarget
+            self.CurrentTargetIdentifier = newTargetKey 
+            target = self.PriorityAreaTarget
+            self.PriorityAreaScanTimer = 0 
+            self.TargetAcquiredTime = tick()
+            self:updateGUI()
+        else
+            self.PriorityAreaScanTimer = self.PriorityAreaScanTimer + CONFIG.FarmSpeed
+            
+            if self.PriorityAreaScanTimer >= self.CombatPriorityAreaScanTime then
+                self.PriorityAreaScanTimer = 0
+                self.CurrentPriorityAreaIndex = self.CurrentPriorityAreaIndex + 1
+                if self.CurrentPriorityAreaIndex > #self.PriorityAreas then
+                    self.CurrentPriorityAreaIndex = 1 
+                end
+                self:updateGUI()
+            end
+            
+            restoreCamera(self)
+            return false
+        end
+    end
+
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
+    
+    self.LastKnownPosition = hrp.Position 
+    hrp.CFrame = CFrame.new(targetPos)
+    
+    local char = LocalPlayer.Character
+    if not char then return false end
+    
+    local equippedTool = char:FindFirstChild(toolName)
+    
+    if not equippedTool then
+        if self:equipTool(toolName) then
+            equippedTool = char:WaitForChild(toolName, 1.0)
+        end
+    end
+    
+    if equippedTool and Camera and target and target.Position then 
+        if not self.OriginalCameraCFrame then
+            self.OriginalCameraCFrame = Camera.CFrame 
+        end
+        
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
+        
+        self:simulateAction(equippedTool)
+    else
+        restoreCamera(self) 
+    end
+
+    return true
+end
+
+function MultiGrinder:executeCombatAction(hrp)
+    if self.PriorityAreaEnabled and #self.PriorityAreas > 0 then
+        return self:executePriorityAreaCombat(hrp)
+    end
+    
+    if self.PriorityAreaTarget or self.PriorityAreaScanTimer > 0 then
+        self.PriorityAreaTarget = nil
+        self.PriorityAreaScanTimer = 0
+        self.CurrentPriorityAreaIndex = 1
+    end
+
+    local toolName = self.CombatToolName
+    local target = self.CurrentTarget
+    
+    local needsNewTarget = not target or not target.Parent or not target.Parent:FindFirstChildOfClass("Humanoid") or target.Parent:FindFirstChildOfClass("Humanoid").Health <= 0
+    
+    if needsNewTarget then
+        local targetNames = self:getTargetNames("Combat")
+        local newTarget, newTargetKey = self:findClosestTarget(hrp.Position, targetNames)
+        
+        if not newTarget then 
+            self.CurrentTarget = nil 
+            self.CurrentTargetIdentifier = nil 
+            self.TargetAcquiredTime = nil 
+            restoreCamera(self) 
+            self:updateGUI() 
+            return false 
+        end
+        
+        self.CurrentTarget = newTarget
+        self.CurrentTargetIdentifier = newTargetKey 
+        target = self.CurrentTarget
+        self.TargetAcquiredTime = tick()
+        self:updateGUI() 
+    end
+    
+    if self.AutoIgnoreEnabled and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
+        local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Health > 0 and humanoid.Health == humanoid.MaxHealth then
+            if self.CurrentTargetIdentifier then
+                self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+                print("[Multi-Bot] Auto-ignored stuck mob:", self.CurrentTargetIdentifier.Name)
+            end
+            
+            self.CurrentTarget = nil 
+            self.CurrentTargetIdentifier = nil 
+            self.TargetAcquiredTime = nil
+            restoreCamera(self)
+            self:updateGUI()
+            return false 
+        end
+        self.TargetAcquiredTime = tick() - 5
+    end
+    
+    local char = LocalPlayer.Character
+    if not char then return false end
+    
+    local equippedTool = char:FindFirstChild(toolName)
+    
+    if not equippedTool then
+        if self:equipTool(toolName) then
+            equippedTool = char:WaitForChild(toolName, 1.0)
+        end
+    end
+    
+    if not equippedTool then return false end
+    
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
+    
+    self.LastKnownPosition = hrp.Position
+    hrp.CFrame = CFrame.new(targetPos)
+    
+    if Camera and target and target.Position then 
+        if not self.OriginalCameraCFrame then
+            self.OriginalCameraCFrame = Camera.CFrame 
+        end
+        
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
+
+        self:simulateAction(equippedTool)
+    else
+        restoreCamera(self) 
+    end
+
+    return true
+end
+
+-- NEW: Event Action
+function MultiGrinder:executeEventAction(hrp)
+    local toolName = self.CombatToolName
+    local targetNames = self:getTargetNames("Event")
+    
+    local currentAreaCFrame = self.EventPriorityAreas[self.CurrentEventAreaIndex]
+    if not currentAreaCFrame then
+        self.CurrentEventAreaIndex = 1
+        currentAreaCFrame = self.EventPriorityAreas[self.CurrentEventAreaIndex]
+    end
+
+    if not currentAreaCFrame then
+        return self:executeCombatAction(hrp)
+    end
+
+    self.LastKnownPosition = hrp.Position
+    hrp.CFrame = currentAreaCFrame
+
+    local target = self.EventAreaTarget
+    local targetIsValid = target and target.Parent and target.Parent:FindFirstChildOfClass("Humanoid") and target.Parent:FindFirstChildOfClass("Humanoid").Health > 0
+    
+    if not targetIsValid then
+        self.EventAreaTarget = nil
+        self.CurrentTargetIdentifier = nil 
+        
+        local newTarget, newTargetKey
+        if #targetNames > 0 then
+            newTarget, newTargetKey = self:findClosestTargetInArea(hrp.Position, self.EventPriorityAreaScanRadius, targetNames)
+        else
+            newTarget, newTargetKey = self:findClosestMobInArea(hrp.Position, self.EventPriorityAreaScanRadius)
+        end
+        
+        if newTarget then
+            self.EventAreaTarget = newTarget
+            self.CurrentTargetIdentifier = newTargetKey 
+            target = self.EventAreaTarget
+            self.EventAreaScanTimer = 0 
+            self.TargetAcquiredTime = tick()
+            self:updateGUI()
+        else
+            self.EventAreaScanTimer = self.EventAreaScanTimer + CONFIG.FarmSpeed
+            
+            if self.EventAreaScanTimer >= self.EventPriorityAreaScanTime then
+                self.EventAreaScanTimer = 0
+                self.CurrentEventAreaIndex = self.CurrentEventAreaIndex + 1
+                if self.CurrentEventAreaIndex > #self.EventPriorityAreas then
+                    self.CurrentEventAreaIndex = 1 
+                end
+                self:updateGUI()
+            end
+            
+            restoreCamera(self)
+            return false
+        end
+    end
+
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
+    
+    self.LastKnownPosition = hrp.Position 
+    hrp.CFrame = CFrame.new(targetPos)
+    
+    local char = LocalPlayer.Character
+    if not char then return false end
+    
+    local equippedTool = char:FindFirstChild(toolName)
+    
+    if not equippedTool then
+        if self:equipTool(toolName) then
+            equippedTool = char:WaitForChild(toolName, 1.0)
+        end
+    end
+    
+    if equippedTool and Camera and target and target.Position then 
+        if not self.OriginalCameraCFrame then
+            self.OriginalCameraCFrame = Camera.CFrame 
+        end
+        
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
+        
+        self:simulateAction(equippedTool)
+    else
+        restoreCamera(self) 
+    end
+
+    return true
+end
+
+function MultiGrinder:executePriorityAreaMining(hrp)
+    local toolName = self.MiningToolNames[self.CurrentMiningToolIndex] or self.MiningToolNames[1]
+    
+    local currentAreaCFrame = self.MiningPriorityAreas[self.CurrentMiningPriorityAreaIndex]
+    if not currentAreaCFrame then
+        self.CurrentMiningPriorityAreaIndex = 1
+        currentAreaCFrame = self.MiningPriorityAreas[self.CurrentMiningPriorityAreaIndex]
+    end
+
+    self.LastKnownPosition = hrp.Position
+    hrp.CFrame = currentAreaCFrame
+
+    local target = self.MiningPriorityAreaTarget
+    local targetIsValid = target and target.Parent 
+    
+    if not targetIsValid then
+        self.MiningPriorityAreaTarget = nil
+        self.CurrentTargetIdentifier = nil 
+        self.LastMiningAngle = 0
+        
+        local targetNames = self:getTargetNames("Mining")
+        local newTarget, newTargetKey = self:findClosestResourceInArea(hrp.Position, self.MiningPriorityAreaScanRadius, targetNames)
+        
+        if newTarget then
+            self.MiningPriorityAreaTarget = newTarget
+            self.CurrentTargetIdentifier = newTargetKey 
+            target = self.MiningPriorityAreaTarget
+            self.MiningPriorityAreaScanTimer = 0 
+            self:updateGUI()
+        else
+            self.MiningPriorityAreaScanTimer = self.MiningPriorityAreaScanTimer + CONFIG.FarmSpeed
+            
+            if self.MiningPriorityAreaScanTimer >= self.MiningPriorityAreaScanTime then
+                self.MiningPriorityAreaScanTimer = 0
+                self.CurrentMiningPriorityAreaIndex = self.CurrentMiningPriorityAreaIndex + 1
+                if self.CurrentMiningPriorityAreaIndex > #self.MiningPriorityAreas then
+                    self.CurrentMiningPriorityAreaIndex = 1 
+                end
+                self:updateGUI()
+            end
+            
+            restoreCamera(self)
+            return false
+        end
+    end
+    
+    if not target or not target.Parent then
+        self.MiningPriorityAreaTarget = nil
+        self.LastMiningAngle = 0
         return false
     end
-end
-
-function StudlandsFisher:findFishingGui()
-    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-
-    for _, gui in ipairs(playerGui:GetChildren()) do
-        if gui:IsA("ScreenGui") and gui.Enabled then
-            local nameLower = gui.Name:lower()
-            for _, pattern in ipairs(CONFIG.FishingGuiPatterns) do
-                if nameLower:find(pattern:lower()) then
-                    return gui
-                end
-            end
-
-            for _, child in ipairs(gui:GetDescendants()) do
-                if child:IsA("GuiObject") and child.Visible then
-                    local childName = child.Name:lower()
-                    for _, pattern in ipairs(CONFIG.FishButtonPatterns) do
-                        if childName:find(pattern:lower()) then
-                            return gui
-                        end
-                    end
-                end
-            end
+    
+    local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Mining")
+    
+    self.LastKnownPosition = hrp.Position 
+    hrp.CFrame = CFrame.new(targetPos)
+    
+    local char = LocalPlayer.Character
+    if not char then return false end
+    
+    local equippedTool = char:FindFirstChild(toolName)
+    
+    if not equippedTool then
+        if self:equipTool(toolName) then
+            equippedTool = char:WaitForChild(toolName, 1.0)
         end
     end
-    return nil
-end
-
-function StudlandsFisher:parseFish(gui)
-    local fishList = {}
-
-    for _, obj in ipairs(gui:GetDescendants()) do
-        if (obj:IsA("TextButton") or obj:IsA("ImageButton")) and obj.Visible then
-            local number = nil
-
-            if obj:IsA("TextButton") then
-                number = tonumber(obj.Text)
-            end
-
-            if not number then
-                local numChild = obj:FindFirstChild("Number") or obj:FindFirstChild("Order") or obj:FindFirstChild("Index")
-                if numChild and numChild:IsA("TextLabel") then
-                    number = tonumber(numChild.Text)
-                end
-            end
-
-            if not number then
-                for _, child in ipairs(obj:GetDescendants()) do
-                    if child:IsA("TextLabel") and child.Visible then
-                        local num = tonumber(child.Text)
-                        if num then
-                            number = num
-                            break
-                        end
-                    end
-                end
-            end
-
-            if not number then
-                local nameNum = obj.Name:match("%d+")
-                if nameNum then
-                    number = tonumber(nameNum)
-                end
-            end
-
-            if number then
-                table.insert(fishList, {
-                    Button = obj,
-                    Number = number,
-                    Position = obj.AbsolutePosition,
-                    Size = obj.AbsoluteSize
-                })
-            end
+    
+    if equippedTool and Camera and target and target.Position then 
+        if not self.OriginalCameraCFrame then
+            self.OriginalCameraCFrame = Camera.CFrame 
         end
-    end
+        
+        Camera.CFrame = CFrame.new(targetPos, target.Position)
 
-    table.sort(fishList, function(a, b)
-        return a.Number < b.Number
-    end)
-
-    return fishList
-end
-
-function StudlandsFisher:clickElement(element)
-    if not element or not element.Visible then return false end
-
-    local pos = element.AbsolutePosition
-    local size = element.AbsoluteSize
-    local center = pos + (size / 2)
-
-    if self.ClickMethod == "VIM" then
-        VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
-        task.wait(0.01)
-        VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
+        self:simulateAction(equippedTool)
+        
+        if not target.Parent then
+            self.LastMiningAngle = 0
+        end
     else
-        pcall(function()
-            element.MouseButton1Down:Fire()
-            task.wait(0.01)
-            element.MouseButton1Up:Fire()
-            element.MouseButton1Click:Fire()
+        restoreCamera(self) 
+    end
+
+    return true
+end
+
+function MultiGrinder:executeMiningAction(hrp)
+    if self.MiningPriorityAreaEnabled and #self.MiningPriorityAreas > 0 then
+        return self:executePriorityAreaMining(hrp)
+    end
+    
+    if self.MiningPriorityAreaTarget or self.MiningPriorityAreaScanTimer > 0 then
+        self.MiningPriorityAreaTarget = nil
+        self.MiningPriorityAreaScanTimer = 0
+        self.CurrentMiningPriorityAreaIndex = 1
+    end
+
+    local toolName = self.MiningToolNames[self.CurrentMiningToolIndex] or self.MiningToolNames[1]
+    local resource = self.CurrentTarget
+
+    local needsNewTarget = not resource or not resource.Parent
+
+    if needsNewTarget then
+        if self.CurrentTarget then
+            self.LastMiningAngle = 0
+        end
+        
+        -- Reset tool index for new target
+        self.CurrentMiningToolIndex = 1
+        toolName = self.MiningToolNames[1]
+        
+        local targetNames = self:getTargetNames("Mining")
+        local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
+        
+        if not newResource then 
+            self.CurrentTarget = nil
+            self.CurrentTargetIdentifier = nil 
+            self.LastMiningAngle = 0
+            restoreCamera(self) 
+            self:updateGUI() 
+            return false 
+        end
+        
+        self.CurrentTarget = newResource
+        self.CurrentTargetIdentifier = newResourceKey 
+        resource = self.CurrentTarget
+        self.LastMiningAngle = 0
+        self:updateGUI() 
+    end
+    
+    if not resource or not resource.Parent then
+        self.CurrentTarget = nil
+        self.LastMiningAngle = 0
+        return false
+    end
+    
+    local char = LocalPlayer.Character
+    if not char then return false end
+    
+    local equippedTool = char:FindFirstChild(toolName)
+    
+    if not equippedTool then
+        if self:equipTool(toolName) then
+            equippedTool = char:WaitForChild(toolName, 1.0)
+        end
+    end
+    
+    if not equippedTool then return false end
+    
+    local targetPos = self:calculateTeleportPosition(resource.Position, hrp.Position, "Mining")
+    
+    self.LastKnownPosition = hrp.Position
+    hrp.CFrame = CFrame.new(targetPos)
+    
+    if Camera and resource and resource.Position then 
+        if not self.OriginalCameraCFrame then
+            self.OriginalCameraCFrame = Camera.CFrame 
+        end
+
+        Camera.CFrame = CFrame.new(targetPos, resource.Position)
+        
+        self:simulateAction(equippedTool)
+        
+        if not resource.Parent then
+            self.LastMiningAngle = 0
+        end
+    else
+        restoreCamera(self) 
+    end
+    
+    return true
+end
+
+function MultiGrinder:SaveSettings()
+    local settings = {
+        CombatToolName = self.CombatToolName,
+        CombatTargetNames = self.CombatTargetNames,
+        CombatPriorityAreaScanRadius = self.CombatPriorityAreaScanRadius,
+        CombatPriorityAreaScanTime = self.CombatPriorityAreaScanTime,
+        PriorityAreaEnabled = self.PriorityAreaEnabled,
+        MiningToolNames = self.MiningToolNames,
+        MiningTargetNames = self.MiningTargetNames,
+        MiningPriorityAreaScanRadius = self.MiningPriorityAreaScanRadius,
+        MiningPriorityAreaScanTime = self.MiningPriorityAreaScanTime,
+        MiningPriorityAreaEnabled = self.MiningPriorityAreaEnabled,
+        AutoIgnoreEnabled = self.AutoIgnoreEnabled,
+        TeleportOnRespawnEnabled = self.TeleportOnRespawnEnabled,
+        AutoBlockEnabled = self.AutoBlockEnabled,
+        SpecialAttackEnabled = self.SpecialAttackEnabled,
+        SafeDistanceEnabled = self.SafeDistanceEnabled,
+        CombatSafeDistance = self.CombatSafeDistance,
+        MiningSafeDistance = self.MiningSafeDistance,
+        MiningHitboxMode = self.MiningHitboxMode,
+        NoclipEnabled = self.NoclipEnabled,
+        FlyEnabled = self.FlyEnabled,
+        HeightOffsetEnabled = self.HeightOffsetEnabled,
+        CombatHeightOffset = self.CombatHeightOffset,
+        MiningHeightOffset = self.MiningHeightOffset,
+        MoneyFarmEnabled = self.MoneyFarmEnabled,
+        MoneyFarmTeleportLocation = self.MoneyFarmTeleportLocation and {self.MoneyFarmTeleportLocation:GetComponents()} or nil,
+        FlySpeed = self.FlySpeed,
+        SellerItemName = self.SellerItemName,
+        SellerAmount = self.SellerAmount,
+        SellerCooldown = self.SellerCooldown,
+        EventStartKeyword = self.EventStartKeyword,
+        EventEndKeyword = self.EventEndKeyword,
+        EventTargetNames = self.EventTargetNames,
+        EventPriorityAreaEnabled = self.EventPriorityAreaEnabled,
+        EventPriorityAreaScanRadius = self.EventPriorityAreaScanRadius,
+        EventPriorityAreaScanTime = self.EventPriorityAreaScanTime,
+        PriorityAreas = {},
+        MiningPriorityAreas = {},
+        EventPriorityAreas = {},
+        UIPos = {}
+    }
+
+    for _, cf in ipairs(self.PriorityAreas) do
+        table.insert(settings.PriorityAreas, {cf:GetComponents()})
+    end
+    
+    for _, cf in ipairs(self.MiningPriorityAreas) do
+        table.insert(settings.MiningPriorityAreas, {cf:GetComponents()})
+    end
+    
+    for _, cf in ipairs(self.EventPriorityAreas) do
+        table.insert(settings.EventPriorityAreas, {cf:GetComponents()})
+    end
+
+    if self.MainGui and self.MainGui.MainFrame then
+        self.UIPosition = self.MainGui.MainFrame.Position
+    end
+    
+    settings.UIPos = {
+        XScale = self.UIPosition.X.Scale,
+        XOffset = self.UIPosition.X.Offset,
+        YScale = self.UIPosition.Y.Scale,
+        YOffset = self.UIPosition.Y.Offset,
+    }
+
+    local success, result = pcall(self.HttpService.JSONEncode, self.HttpService, settings)
+    if success then
+        writefile(self.SettingsFile, result)
+    end
+end
+
+function MultiGrinder:LoadSettings()
+    if not isfile(self.SettingsFile) then return end
+    
+    local success, jsonData = pcall(readfile, self.SettingsFile)
+    if not success then return end
+    
+    local success, settings = pcall(self.HttpService.JSONDecode, self.HttpService, jsonData)
+    if not success or typeof(settings) ~= "table" then return end
+
+    self.CombatToolName = settings.CombatToolName or self.CombatToolName
+    self.CombatTargetNames = settings.CombatTargetNames or self.CombatTargetNames
+    self.CombatPriorityAreaScanRadius = settings.CombatPriorityAreaScanRadius or self.CombatPriorityAreaScanRadius
+    self.CombatPriorityAreaScanTime = settings.CombatPriorityAreaScanTime or self.CombatPriorityAreaScanTime
+    self.PriorityAreaEnabled = settings.PriorityAreaEnabled or self.PriorityAreaEnabled
+    
+    if settings.MiningToolNames and typeof(settings.MiningToolNames) == "table" then
+        for i = 1, 4 do
+            self.MiningToolNames[i] = settings.MiningToolNames[i] or ""
+        end
+    end
+    
+    self.MiningTargetNames = settings.MiningTargetNames or self.MiningTargetNames
+    self.MiningPriorityAreaScanRadius = settings.MiningPriorityAreaScanRadius or self.MiningPriorityAreaScanRadius
+    self.MiningPriorityAreaScanTime = settings.MiningPriorityAreaScanTime or self.MiningPriorityAreaScanTime
+    self.MiningPriorityAreaEnabled = settings.MiningPriorityAreaEnabled or self.MiningPriorityAreaEnabled
+    
+    self.AutoIgnoreEnabled = settings.AutoIgnoreEnabled ~= false
+    self.TeleportOnRespawnEnabled = settings.TeleportOnRespawnEnabled ~= false
+    self.AutoBlockEnabled = settings.AutoBlockEnabled == true
+    self.SpecialAttackEnabled = settings.SpecialAttackEnabled == true
+    
+    self.SafeDistanceEnabled = settings.SafeDistanceEnabled == true
+    self.CombatSafeDistance = settings.CombatSafeDistance or 10
+    self.MiningSafeDistance = settings.MiningSafeDistance or 1
+    self.MiningHitboxMode = settings.MiningHitboxMode == true
+    
+    self.HeightOffsetEnabled = settings.HeightOffsetEnabled == true
+    self.CombatHeightOffset = settings.CombatHeightOffset or CONFIG.CombatHeightOffset
+    self.MiningHeightOffset = settings.MiningHeightOffset or CONFIG.MiningHeightOffset
+    self.MoneyFarmEnabled = settings.MoneyFarmEnabled == true
+    
+    if settings.MoneyFarmTeleportLocation then
+        self.MoneyFarmTeleportLocation = CFrame.new(unpack(settings.MoneyFarmTeleportLocation))
+    end
+    
+    self.FlySpeed = settings.FlySpeed or CONFIG.FlySpeed
+    self.SellerItemName = settings.SellerItemName or self.SellerItemName
+    self.SellerAmount = settings.SellerAmount or self.SellerAmount
+    self.SellerCooldown = settings.SellerCooldown or self.SellerCooldown
+    
+    self.EventStartKeyword = settings.EventStartKeyword or ""
+    self.EventEndKeyword = settings.EventEndKeyword or ""
+    self.EventTargetNames = settings.EventTargetNames or self.EventTargetNames
+    self.EventPriorityAreaEnabled = settings.EventPriorityAreaEnabled == true
+    self.EventPriorityAreaScanRadius = settings.EventPriorityAreaScanRadius or 50
+    self.EventPriorityAreaScanTime = settings.EventPriorityAreaScanTime or 3
+    
+    if settings.NoclipEnabled then
+        task.delay(1, function()
+            self:ToggleNoclip(true)
+            self:updateGUI()
+        end)
+    end
+    if settings.FlyEnabled then
+        task.delay(1, function()
+            self:ToggleFly(true)
+            self:updateGUI()
+        end)
+    end
+    if settings.MoneyFarmEnabled then
+        task.delay(1, function()
+            self:StartMoneyFarm()
+            self:updateGUI()
         end)
     end
 
-    return true
-end
-
-function StudlandsFisher:solveMinigame(gui)
-    if not self.AutoSolveEnabled then
-        self:log("Auto-solve disabled, waiting for manual input", "warning")
-        return false
-    end
-
-    self:log("Solving minigame...", "info")
-
-    local fishList = self:parseFish(gui)
-
-    if #fishList == 0 then
-        self:log("No fish found in GUI!", "error")
-        if self.DebugMode then
-            self:inspectGuiDetailed(gui)
+    if settings.PriorityAreas then
+        self.PriorityAreas = {}
+        for _, components in ipairs(settings.PriorityAreas) do
+            table.insert(self.PriorityAreas, CFrame.new(unpack(components)))
         end
-        return false
     end
-
-    self:log("Found " .. #fishList .. " fish to click", "info")
-
-    for i, fish in ipairs(fishList) do
-        self:clickElement(fish.Button)
-        self.FishClickedTotal = self.FishClickedTotal + 1
-        task.wait(CONFIG.ClickDelay)
+    
+    if settings.MiningPriorityAreas then
+        self.MiningPriorityAreas = {}
+        for _, components in ipairs(settings.MiningPriorityAreas) do
+            table.insert(self.MiningPriorityAreas, CFrame.new(unpack(components)))
+        end
     end
-
-    self.CastsSuccess = self.CastsSuccess + 1
-    self:log("Minigame completed", "success")
-    self:updateStats()
-    return true
-end
-
--- ==================== MAIN LOOP ====================
-
-function StudlandsFisher:fishingLoop()
-    while self.Enabled do
-        if not self.IsFishing and self.AutoCastEnabled then
-            self.IsFishing = true
-
-            if self:castRod() then
-                local gui = nil
-                local waitStart = tick()
-
-                while tick() - waitStart < CONFIG.MaxWaitTime do
-                    gui = self:findFishingGui()
-                    if gui then break end
-                    task.wait(0.1)
-                end
-
-                if gui then
-                    self.CurrentGui = gui
-                    task.wait(0.2)
-
-                    local success = self:solveMinigame(gui)
-
-                    if not success and self.StopOnFail then
-                        self:log("Stopping due to failure", "error")
-                        self.Enabled = false
-                        self:updateGUI()
-                        break
-                    end
-
-                    local closeStart = tick()
-                    while gui and gui.Parent and tick() - closeStart < 5 do
-                        task.wait(0.1)
-                    end
-                else
-                    self:log("No fishing GUI appeared", "warning")
-                end
-            end
-
-            self.IsFishing = false
-            task.wait(CONFIG.CastCooldown)
-        else
-            task.wait(0.1)
+    
+    if settings.EventPriorityAreas then
+        self.EventPriorityAreas = {}
+        for _, components in ipairs(settings.EventPriorityAreas) do
+            table.insert(self.EventPriorityAreas, CFrame.new(unpack(components)))
         end
     end
 
-    self.IsFishing = false
-    self:log("Fishing loop stopped", "info")
-end
-
--- ==================== DEBUG / INSPECTOR ====================
-
-function StudlandsFisher:inspectGui()
-    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-    self:log("=== INSPECTING GUI ===", "info")
-
-    for _, gui in ipairs(playerGui:GetChildren()) do
-        if gui:IsA("ScreenGui") then
-            self:log("ScreenGui: " .. gui.Name .. " | Enabled: " .. tostring(gui.Enabled), "info")
-        end
+    if settings.UIPos then
+        self.UIPosition = UDim2.new(
+            settings.UIPos.XScale or 0.5,
+            settings.UIPos.XOffset or -CONFIG.FrameWidth/2,
+            settings.UIPos.YScale or 0.5,
+            settings.UIPos.YOffset or -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2)
+        )
     end
 end
 
-function StudlandsFisher:inspectGuiDetailed(gui)
-    self:log("=== DETAILED GUI DUMP ===", "info")
-    for _, obj in ipairs(gui:GetDescendants()) do
-        if obj:IsA("GuiObject") then
-            local text = ""
-            if obj:IsA("TextLabel") or obj:IsA("TextButton") then
-                text = " | Text: '" .. obj.Text .. "'"
-            end
-            self:log(obj.ClassName .. " | " .. obj.Name .. " | Visible: " .. tostring(obj.Visible) .. text, "info")
-        end
+function MultiGrinder:ResetSettings()
+    self.CombatToolName = CONFIG.Combat.ToolName
+    self.CombatTargetNames = table.concat(CONFIG.Combat.TargetNames, ", ")
+    self.CombatPriorityAreaScanRadius = CONFIG.Combat.CombatPriorityAreaScanRadius
+    self.CombatPriorityAreaScanTime = CONFIG.Combat.CombatPriorityAreaScanTime
+    self.PriorityAreaEnabled = false
+    
+    self.MiningToolNames = {CONFIG.Mining.ToolName, "", "", ""}
+    self.MiningTargetNames = table.concat(CONFIG.Mining.TargetNames, ", ")
+    self.MiningPriorityAreaScanRadius = CONFIG.Mining.MiningPriorityAreaScanRadius
+    self.MiningPriorityAreaScanTime = CONFIG.Mining.MiningPriorityAreaScanTime
+    self.MiningPriorityAreaEnabled = false
+    
+    self.AutoIgnoreEnabled = true
+    self.TeleportOnRespawnEnabled = true
+    self.AutoBlockEnabled = false
+    self.SpecialAttackEnabled = false
+    
+    self.SafeDistanceEnabled = false
+    self.CombatSafeDistance = 10
+    self.MiningSafeDistance = 1
+    self.MiningHitboxMode = false
+    
+    self.HeightOffsetEnabled = false
+    self.CombatHeightOffset = CONFIG.CombatHeightOffset
+    self.MiningHeightOffset = CONFIG.MiningHeightOffset
+    
+    if self.MoneyFarmEnabled then
+        self:StopMoneyFarm()
+    end
+    self.MoneyFarmEnabled = false
+    self.MoneyFarmTeleportLocation = nil
+    
+    if self.SellerEnabled then
+        self:StopSelling()
+    end
+    self.SellerEnabled = false
+    self.SellerItemName = "Crystal"
+    self.SellerAmount = 1
+    self.SellerCooldown = 0.05
+    self.TotalSold = 0
+    
+    self.FlySpeed = CONFIG.FlySpeed
+    
+    -- NEW: Reset Event settings
+    self.EventMode = false
+    self.EventStartKeyword = ""
+    self.EventEndKeyword = ""
+    self.EventTargetNames = table.concat(CONFIG.Combat.TargetNames, ", ")
+    self.EventPriorityAreas = {}
+    self.EventPriorityAreaEnabled = false
+    self.CurrentEventAreaIndex = 1
+    self.EventAreaScanTimer = 0
+    self.EventAreaTarget = nil
+    self.EventPriorityAreaScanRadius = CONFIG.Event.PriorityAreaScanRadius
+    self.EventPriorityAreaScanTime = CONFIG.Event.PriorityAreaScanTime
+    self.PreEventState = {}
+    
+    -- Disable movement
+    if self.NoclipEnabled then
+        self:ToggleNoclip(false)
+    end
+    if self.FlyEnabled then
+        self:ToggleFly(false)
+    end
+    
+    self.PriorityAreas = {}
+    self.MiningPriorityAreas = {}
+    self.IgnoredTargets = {}
+    
+    self.UIPosition = UDim2.new(0.5, -CONFIG.FrameWidth/2, 0.5, -((CONFIG.TitleBarHeight + CONFIG.TabBarHeight + CONFIG.ContentAreaHeight) / 2))
+    if self.MainGui and self.MainGui.MainFrame then
+        self.MainGui.MainFrame.Position = self.UIPosition
+    end
+
+    pcall(delfile, self.SettingsFile)
+    
+    if self.MainGui then
+        self.MainGui.CombatPage.ToolNameInput.Text = self.CombatToolName
+        self.MainGui.CombatPage.TargetNamesInput.Text = self.CombatTargetNames
+        self.MainGui.CombatPage.CombatPriorityRadiusInput.Text = self.CombatPriorityAreaScanRadius
+        self.MainGui.CombatPage.CombatPriorityScanTimeInput.Text = self.CombatPriorityAreaScanTime
+        
+        self.MainGui.MiningPage.ToolNameInput1.Text = self.MiningToolNames[1]
+        self.MainGui.MiningPage.ToolNameInput2.Text = self.MiningToolNames[2]
+        self.MainGui.MiningPage.ToolNameInput3.Text = self.MiningToolNames[3]
+        self.MainGui.MiningPage.ToolNameInput4.Text = self.MiningToolNames[4]
+        self.MainGui.MiningPage.TargetNamesInput.Text = self.MiningTargetNames
+        self.MainGui.MiningPage.MiningPriorityRadiusInput.Text = self.MiningPriorityAreaScanRadius
+        self.MainGui.MiningPage.MiningPriorityScanTimeInput.Text = self.MiningPriorityAreaScanTime
+        
+        self.MainGui.GeneralPage.SafeDistanceToggle.Text = "Safe Distance: OFF"
+        self.MainGui.GeneralPage.SafeDistanceToggle.BackgroundColor3 = CONFIG.ToggleOffColor
+        self.MainGui.GeneralPage.CombatDistanceInput.Text = tostring(self.CombatSafeDistance)
+        self.MainGui.GeneralPage.MiningDistanceInput.Text = tostring(self.MiningSafeDistance)
+        self.MainGui.GeneralPage.MiningHitboxToggle.Text = "Mining Hitbox+: OFF"
+        self.MainGui.GeneralPage.MiningHitboxToggle.BackgroundColor3 = CONFIG.ToggleOffColor
+        
+        self.MainGui.GeneralPage.HeightOffsetToggle.Text = "Height Offset: OFF"
+        self.MainGui.GeneralPage.HeightOffsetToggle.BackgroundColor3 = CONFIG.ToggleOffColor
+        self.MainGui.GeneralPage.CombatHeightInput.Text = tostring(self.CombatHeightOffset)
+        self.MainGui.GeneralPage.MiningHeightInput.Text = tostring(self.MiningHeightOffset)
+        
+        self.MainGui.GeneralPage.MoneyFarmButton.Text = "Money Farm: OFF"
+        self.MainGui.GeneralPage.MoneyFarmButton.BackgroundColor3 = CONFIG.ToggleOffColor
+        
+        self.MainGui.GeneralPage.MoneyFarmSetTPButton.Text = "Set Money Farm TP"
+        self.MainGui.GeneralPage.MoneyFarmClearTPButton.Text = "Clear Money Farm TP"
+        self.MainGui.GeneralPage.MoneyFarmTPLabel.Text = "TP Location: Not Set"
+        
+        self.MainGui.GeneralPage.FlySpeedInput.Text = tostring(self.FlySpeed)
+        
+        self.MainGui.SellerPage.ItemNameInput.Text = self.SellerItemName
+        self.MainGui.SellerPage.AmountInput.Text = tostring(self.SellerAmount)
+        self.MainGui.SellerPage.CooldownInput.Text = tostring(self.SellerCooldown)
+        self.MainGui.SellerPage.TotalLabel.Text = "Total Sold: 0"
+        self.MainGui.SellerPage.ToggleButton.Text = "AUTO SELL: OFF"
+        self.MainGui.SellerPage.ToggleButton.BackgroundColor3 = CONFIG.ToggleOffColor
+        
+        -- NEW: Reset Event GUI
+        self.MainGui.EventsPage.StartKeywordInput.Text = self.EventStartKeyword
+        self.MainGui.EventsPage.EndKeywordInput.Text = self.EventEndKeyword
+        self.MainGui.EventsPage.TargetNamesInput.Text = self.EventTargetNames
+        self.MainGui.EventsPage.PriorityAreaToggleButton.Text = "Priority Areas: OFF"
+        self.MainGui.EventsPage.PriorityAreaToggleButton.BackgroundColor3 = CONFIG.ToggleOffColor
+        self.MainGui.EventsPage.PriorityAreaCountLabel.Text = "Areas: 0"
+        self.MainGui.EventsPage.PriorityRadiusInput.Text = tostring(self.EventPriorityAreaScanRadius)
+        self.MainGui.EventsPage.PriorityScanTimeInput.Text = tostring(self.EventPriorityAreaScanTime)
+        self.MainGui.EventsPage.StatusLabel.Text = "Event Mode: INACTIVE"
+        self.MainGui.EventsPage.StatusLabel.TextColor3 = CONFIG.ToggleOffColor
+        
+        self:updateGUI()
     end
 end
 
--- ==================== LOGGING ====================
+function MultiGrinder:setMinimizedState(isMinimized)
+    self.IsMinimized = isMinimized
+    
+    if not self.MainGui or not self.MainGui.MainFrame then return end
 
-function StudlandsFisher:log(message, level)
-    level = level or "info"
-    local timestamp = os.date("%H:%M:%S")
-    local entry = "[" .. timestamp .. "] [" .. level:upper() .. "] " .. message
-
-    table.insert(self.Logs, 1, {text = entry, level = level})
-
-    if #self.Logs > self.MaxLogs then
-        table.remove(self.Logs)
+    local MainFrame = self.MainGui.MainFrame
+    local ContentContainer = MainFrame:FindFirstChild("ContentContainer")
+    local TabBar = MainFrame:FindFirstChild("TabBar")
+    
+    if not ContentContainer or not TabBar then return end
+    
+    ContentContainer.Visible = not isMinimized
+    TabBar.Visible = not isMinimized
+    
+    if isMinimized then
+        MainFrame:TweenSize(UDim2.new(0, CONFIG.FrameWidth, 0, CONFIG.TitleBarHeight), "Out", "Quad", 0.2, true)
+    else
+        MainFrame:TweenSize(UDim2.new(0, CONFIG.FrameWidth, 0, self.InitialFrameHeight), "Out", "Quad", 0.2, true)
     end
-
-    if self.MainGui and self.MainGui.LogsPage and self.MainGui.LogsPage.LogText then
-        self:updateLogDisplay()
-    end
-
-    print("[Fisher] " .. entry)
 end
 
-function StudlandsFisher:updateLogDisplay()
-    local logText = ""
-    for i = math.min(20, #self.Logs), 1, -1 do
-        logText = logText .. self.Logs[i].text .. "\n"
-    end
-    self.MainGui.LogsPage.LogText.Text = logText
-end
-
--- ==================== STATS ====================
-
-function StudlandsFisher:updateStats()
+function MultiGrinder:updateGUI()
     if not self.MainGui then return end
-
-    local runtime = self.StartTime and (tick() - self.StartTime) or 0
-    local hours = math.floor(runtime / 3600)
-    local mins = math.floor((runtime % 3600) / 60)
-    local secs = math.floor(runtime % 60)
-
-    local stats = self.MainGui.MainPage
-    stats.CastsLabel.Text = "Casts: " .. self.CastsTotal
-    stats.SuccessLabel.Text = "Success: " .. self.CastsSuccess
-    stats.FailedLabel.Text = "Failed: " .. self.CastsFailed
-    stats.FishClickedLabel.Text = "Fish Clicked: " .. self.FishClickedTotal
-    stats.RuntimeLabel.Text = string.format("Runtime: %02d:%02d:%02d", hours, mins, secs)
-
-    local rate = 0
-    if self.CastsTotal > 0 then
-        rate = math.floor((self.CastsSuccess / self.CastsTotal) * 100)
+    
+    local generalPage = self.MainGui.GeneralPage
+    local combatPage = self.MainGui.CombatPage
+    local miningPage = self.MainGui.MiningPage
+    local sellerPage = self.MainGui.SellerPage
+    local eventsPage = self.MainGui.EventsPage
+    
+    if self.Enabled then
+        generalPage.ToggleButton.Text = "GRINDER: ON"
+        generalPage.ToggleButton.BackgroundColor3 = CONFIG.ToggleOnColor
+        generalPage.IgnoreButton.Visible = true
+    else
+        generalPage.ToggleButton.Text = "GRINDER: OFF"
+        generalPage.ToggleButton.BackgroundColor3 = CONFIG.ToggleOffColor
+        generalPage.IgnoreButton.Visible = false
     end
-    stats.SuccessRateLabel.Text = "Success Rate: " .. rate .. "%"
+    
+    if self.Enabled then
+        if self.CurrentTargetIdentifier then
+            generalPage.IgnoreButton.Text = string.format("IGNORE: %s", self.CurrentTargetIdentifier.Name)
+            generalPage.IgnoreButton.BackgroundColor3 = Color3.fromRGB(150, 0, 200)
+        else
+            generalPage.IgnoreButton.Text = "No Target to Ignore"
+            generalPage.IgnoreButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+        end
+    end
+
+    generalPage.AutoIgnoreButton.Text = self.AutoIgnoreEnabled and "Auto-Ignore: ON" or "Auto-Ignore: OFF"
+    generalPage.AutoIgnoreButton.BackgroundColor3 = self.AutoIgnoreEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+
+    generalPage.TeleportOnRespawnButton.Text = self.TeleportOnRespawnEnabled and "TP on Respawn: ON" or "TP on Respawn: OFF"
+    generalPage.TeleportOnRespawnButton.BackgroundColor3 = self.TeleportOnRespawnEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+
+    generalPage.AutoBlockButton.Text = self.AutoBlockEnabled and "Auto-Block: ON" or "Auto-Block: OFF"
+    generalPage.AutoBlockButton.BackgroundColor3 = self.AutoBlockEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    
+    generalPage.SpecialAttackButton.Text = self.SpecialAttackEnabled and "Special Attack: ON" or "Special Attack: OFF"
+    generalPage.SpecialAttackButton.BackgroundColor3 = self.SpecialAttackEnabled and CONFIG.SpecialAttackColor or CONFIG.ToggleOffColor
+    
+    generalPage.SafeDistanceToggle.Text = self.SafeDistanceEnabled and "Safe Distance: ON" or "Safe Distance: OFF"
+    generalPage.SafeDistanceToggle.BackgroundColor3 = self.SafeDistanceEnabled and CONFIG.DistanceColor or CONFIG.ToggleOffColor
+    
+    generalPage.MiningHitboxToggle.Text = self.MiningHitboxMode and "Mining Hitbox+: ON" or "Mining Hitbox+: OFF"
+    generalPage.MiningHitboxToggle.BackgroundColor3 = self.MiningHitboxMode and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+
+    local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolNames[1]
+    local modeDisplayName = (self.Mode == "Combat") and "MODE: COMBAT" or "MODE: MINING"
+    generalPage.ModeButton.Text = modeDisplayName .. " ("..currentToolName..")"
+    
+    generalPage.NoclipButton.Text = self.NoclipEnabled and "NOCLIP: ON" or "NOCLIP: OFF"
+    generalPage.NoclipButton.BackgroundColor3 = self.NoclipEnabled and Color3.fromRGB(255, 165, 0) or CONFIG.ToggleOffColor
+    
+    generalPage.FlyButton.Text = self.FlyEnabled and "FLY: ON" or "FLY: OFF"
+    generalPage.FlyButton.BackgroundColor3 = self.FlyEnabled and Color3.fromRGB(255, 165, 0) or CONFIG.ToggleOffColor
+    
+    generalPage.FlySpeedInput.Text = tostring(self.FlySpeed)
+    
+    generalPage.HeightOffsetToggle.Text = self.HeightOffsetEnabled and "Height Offset: ON" or "Height Offset: OFF"
+    generalPage.HeightOffsetToggle.BackgroundColor3 = self.HeightOffsetEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    
+    generalPage.MoneyFarmButton.Text = self.MoneyFarmEnabled and "Money Farm: ON" or "Money Farm: OFF"
+    generalPage.MoneyFarmButton.BackgroundColor3 = self.MoneyFarmEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    
+    generalPage.MoneyFarmTPLabel.Text = self.MoneyFarmTeleportLocation and "TP Location: SET" or "TP Location: Not Set"
+    generalPage.MoneyFarmTPLabel.TextColor3 = self.MoneyFarmTeleportLocation and CONFIG.ToggleOnColor or Color3.fromRGB(180, 180, 200)
+    
+    sellerPage.ToggleButton.Text = self.SellerEnabled and "AUTO SELL: ON" or "AUTO SELL: OFF"
+    sellerPage.ToggleButton.BackgroundColor3 = self.SellerEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    sellerPage.TotalLabel.Text = string.format("Total Sold: %d", self.TotalSold)
+    
+    combatPage.PriorityAreaToggleButton.Text = self.PriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
+    combatPage.PriorityAreaToggleButton.BackgroundColor3 = self.PriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    combatPage.PriorityAreaCountLabel.Text = string.format("Areas: %d", #self.PriorityAreas)
+
+    miningPage.MiningPriorityAreaToggleButton.Text = self.MiningPriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
+    miningPage.MiningPriorityAreaToggleButton.BackgroundColor3 = self.MiningPriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    miningPage.MiningPriorityAreaCountLabel.Text = string.format("Areas: %d", #self.MiningPriorityAreas)
+
+    -- NEW: Event page updates
+    eventsPage.PriorityAreaToggleButton.Text = self.EventPriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
+    eventsPage.PriorityAreaToggleButton.BackgroundColor3 = self.EventPriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    eventsPage.PriorityAreaCountLabel.Text = string.format("Areas: %d", #self.EventPriorityAreas)
+    eventsPage.StatusLabel.Text = self.EventMode and "Event Mode: ACTIVE" or "Event Mode: INACTIVE"
+    eventsPage.StatusLabel.TextColor3 = self.EventMode and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+
+    for tabName, tabButton in pairs(self.MainGui.Tabs) do
+        if tabName == self.CurrentTab then
+            tabButton.BackgroundColor3 = CONFIG.BackgroundColor 
+            tabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+            tabButton.Font = Enum.Font.GothamBold
+        else
+            tabButton.BackgroundColor3 = CONFIG.TabBarColor 
+            tabButton.TextColor3 = Color3.fromRGB(150, 150, 150)
+            tabButton.Font = Enum.Font.Gotham
+        end
+    end
 end
 
--- ==================== UI CREATION HELPERS ====================
+function MultiGrinder:showTab(tabName)
+    self.CurrentTab = tabName
+    self:updateGUI()
+    
+    local contentContainer = self.MainGui.MainFrame:FindFirstChild("ContentContainer")
+    if not contentContainer then return end
 
+    for _, page in pairs(contentContainer:GetChildren()) do
+        if page:IsA("Frame") and page.Name:match("Page$") then
+            page.Visible = false
+        end
+    end
+    
+    if self.MainGui.Pages[tabName] then
+        self.MainGui.Pages[tabName].Visible = true
+        task.wait()
+        local layout = self.MainGui.Pages[tabName]:FindFirstChildOfClass("UIListLayout")
+        if layout then
+            contentContainer.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 20)
+        end
+        contentContainer.CanvasPosition = Vector2.new(0,0)
+    end
+end
+
+-- UI Creation Helpers
 local function createSectionHeader(parent, text)
     local header = Instance.new("TextLabel")
     header.Size = UDim2.new(0.9, 0, 0, 25)
@@ -439,12 +1873,13 @@ local function createSectionHeader(parent, text)
     header.BackgroundTransparency = 1
     header.TextXAlignment = Enum.TextXAlignment.Left
     header.Parent = parent
-
+    
     local line = Instance.new("Frame")
     line.Size = UDim2.new(0.9, 0, 0, 1)
     line.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
     line.BorderSizePixel = 0
     line.Parent = parent
+    
     return header
 end
 
@@ -480,8 +1915,8 @@ end
 
 local function createButton(parent, text, color, height)
     local button = Instance.new("TextButton")
-    local h = height or CONFIG.ButtonHeight
-    button.Size = UDim2.new(0.9, 0, 0, h)
+    local buttonHeight = height or CONFIG.ButtonHeight
+    button.Size = UDim2.new(0.9, 0, 0, buttonHeight) 
     button.Text = text
     button.BackgroundColor3 = color or CONFIG.ToggleOffColor
     button.Font = Enum.Font.GothamBold
@@ -494,19 +1929,18 @@ local function createButton(parent, text, color, height)
 end
 
 local function createListLayout(parent)
-    local layout = Instance.new("UIListLayout")
-    layout.Padding = UDim.new(0, 8)
-    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.FillDirection = Enum.FillDirection.Vertical
-    layout.Parent = parent
-    return layout
+    local ListLayout = Instance.new("UIListLayout", parent)
+    ListLayout.Padding = UDim.new(0, 8) 
+    ListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    ListLayout.FillDirection = Enum.FillDirection.Vertical
+    return ListLayout
 end
 
 local function createContentPage(parent, name)
     local page = Instance.new("Frame")
     page.Name = name .. "Page"
-    page.Size = UDim2.new(1, 0, 0, 0)
+    page.Size = UDim2.new(1, 0, 0, 0) 
     page.AutomaticSize = Enum.AutomaticSize.Y
     page.BackgroundColor3 = CONFIG.BackgroundColor
     page.BackgroundTransparency = 0
@@ -515,28 +1949,25 @@ local function createContentPage(parent, name)
     return page
 end
 
--- ==================== GUI SETUP ====================
-
-function StudlandsFisher:setupGUI()
+function MultiGrinder:setupGUI()
     local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-    if playerGui:FindFirstChild("StudlandsFisherGui") then
-        playerGui.StudlandsFisherGui:Destroy()
-    end
+    if playerGui:FindFirstChild("MultiBotGui") then playerGui.MultiBotGui:Destroy() end
 
     local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "StudlandsFisherGui"
+    ScreenGui.Name = "MultiBotGui"
     ScreenGui.Parent = playerGui
 
     local MainFrame = Instance.new("Frame")
     MainFrame.Name = "MainFrame"
-    MainFrame.Size = UDim2.new(0, CONFIG.FrameWidth, 0, self.InitialFrameHeight)
-    MainFrame.Position = self.UIPosition
+    MainFrame.Size = UDim2.new(0, CONFIG.FrameWidth, 0, self.InitialFrameHeight) 
+    MainFrame.Position = self.UIPosition 
     MainFrame.BackgroundColor3 = CONFIG.BackgroundColor
     MainFrame.BorderColor3 = Color3.fromRGB(40, 40, 55)
     MainFrame.BorderSizePixel = 1
     MainFrame.Parent = ScreenGui
     Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, CONFIG.MainFrameCornerRadius)
-
+    
+    -- Shadow effect
     local Shadow = Instance.new("ImageLabel")
     Shadow.Name = "Shadow"
     Shadow.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -550,7 +1981,7 @@ function StudlandsFisher:setupGUI()
     Shadow.ScaleType = Enum.ScaleType.Slice
     Shadow.SliceCenter = Rect.new(23, 23, 277, 277)
     Shadow.Parent = MainFrame
-
+    
     local TitleBar = Instance.new("Frame")
     TitleBar.Name = "TitleBar"
     TitleBar.Size = UDim2.new(1, 0, 0, CONFIG.TitleBarHeight)
@@ -558,28 +1989,30 @@ function StudlandsFisher:setupGUI()
     TitleBar.Parent = MainFrame
     TitleBar.BorderSizePixel = 0
     Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, CONFIG.MainFrameCornerRadius)
-
+    
     local TitleLabel = Instance.new("TextLabel")
     TitleLabel.Name = "TitleLabel"
     TitleLabel.Position = UDim2.new(0, 15, 0, 0)
-    TitleLabel.Size = UDim2.new(1, -70, 1, 0)
-    TitleLabel.Text = CONFIG.ScriptName
+    TitleLabel.Size = UDim2.new(1, -70, 1, 0) 
+    TitleLabel.Text = CONFIG.ScriptName 
     TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
     TitleLabel.Font = Enum.Font.GothamBold
-    TitleLabel.TextSize = 18
+    TitleLabel.TextSize = 18 
     TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.TextWrapped = true
     TitleLabel.BackgroundTransparency = 1
     TitleLabel.Parent = TitleBar
-
+    
     local controlSize = 24
+    
     local function createControl(text, color, name, posX)
         local btn = Instance.new("TextButton")
         btn.Name = name
-        btn.Size = UDim2.new(0, controlSize, 0, controlSize)
+        btn.Size = UDim2.new(0, controlSize, 0, controlSize) 
         btn.Text = text
-        btn.TextSize = 14
+        btn.TextSize = 14 
         btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        btn.BackgroundColor3 = color
+        btn.BackgroundColor3 = color 
         btn.Parent = TitleBar
         btn.BorderSizePixel = 0
         btn.Position = UDim2.new(1, posX, 0.5, -controlSize/2)
@@ -602,17 +2035,19 @@ function StudlandsFisher:setupGUI()
     CloseButton.MouseLeave:Connect(function()
         CloseButton.BackgroundColor3 = CONFIG.CloseButtonBaseColor
     end)
-
+    
+    -- Dragging
     local dragging = false
     local dragInput = nil
     local dragStart = nil
     local startPos = nil
-
+    
     TitleBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             dragStart = input.Position
             startPos = MainFrame.Position
+            
             input.Changed:Connect(function()
                 if input.UserInputState == Enum.UserInputState.End then
                     dragging = false
@@ -620,13 +2055,13 @@ function StudlandsFisher:setupGUI()
             end)
         end
     end)
-
+    
     TitleBar.InputChanged:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
             dragInput = input
         end
     end)
-
+    
     UserInputService.InputChanged:Connect(function(input)
         if input == dragInput and dragging then
             local delta = input.Position - dragStart
@@ -634,23 +2069,23 @@ function StudlandsFisher:setupGUI()
             self.UIPosition = MainFrame.Position
         end
     end)
-
+    
     local TabBar = Instance.new("Frame")
     TabBar.Name = "TabBar"
     TabBar.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight)
     TabBar.Size = UDim2.new(1, 0, 0, CONFIG.TabBarHeight)
-    TabBar.BackgroundColor3 = CONFIG.TabBarColor
+    TabBar.BackgroundColor3 = CONFIG.TabBarColor 
     TabBar.Parent = MainFrame
     TabBar.BorderSizePixel = 0
-
+    
     local TabLayout = Instance.new("UIListLayout")
     TabLayout.FillDirection = Enum.FillDirection.Horizontal
     TabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
     TabLayout.Parent = TabBar
 
-    local TabNames = {"Main", "Settings", "Logs"}
+    local TabNames = {"General", "Combat", "Mining", "Seller", "Events"}
     local Tabs = {}
-
+    
     for _, tabName in ipairs(TabNames) do
         local tabButton = Instance.new("TextButton")
         tabButton.Name = tabName .. "Tab"
@@ -658,19 +2093,19 @@ function StudlandsFisher:setupGUI()
         tabButton.Text = tabName
         tabButton.Font = Enum.Font.Gotham
         tabButton.TextColor3 = Color3.fromRGB(150, 150, 150)
-        tabButton.BackgroundColor3 = CONFIG.TabBarColor
+        tabButton.BackgroundColor3 = CONFIG.TabBarColor 
         tabButton.Parent = TabBar
         tabButton.BorderSizePixel = 0
-
+        
         tabButton.MouseButton1Click:Connect(function()
             self:showTab(tabName)
         end)
         Tabs[tabName] = tabButton
     end
-
+    
     local ContentContainer = Instance.new("ScrollingFrame")
     ContentContainer.Name = "ContentContainer"
-    ContentContainer.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight + CONFIG.TabBarHeight)
+    ContentContainer.Position = UDim2.new(0, 0, 0, CONFIG.TitleBarHeight + CONFIG.TabBarHeight) 
     ContentContainer.Size = UDim2.new(1, 0, 1, -(CONFIG.TitleBarHeight + CONFIG.TabBarHeight))
     ContentContainer.BackgroundColor3 = CONFIG.BackgroundColor
     ContentContainer.Parent = MainFrame
@@ -679,367 +2114,795 @@ function StudlandsFisher:setupGUI()
     ContentContainer.ScrollBarImageColor3 = CONFIG.AccentColor
     ContentContainer.ScrollBarThickness = 4
     ContentContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
-
+    
     local Pages = {}
 
-    -- ==================== MAIN PAGE ====================
-    local MainPage = createContentPage(ContentContainer, "Main")
-    local MainLayout = createListLayout(MainPage)
-    MainLayout.Padding = UDim.new(0, 10)
-
-    createSectionHeader(MainPage, "ROD SETUP")
-
-    createInputLabel(MainPage, "Rod Name (must be in backpack):")
-    local RodInput = createTextBox(MainPage, CONFIG.RodName, "E.g., Golden Fishing Rod")
-    RodInput.FocusLost:Connect(function()
-        CONFIG.RodName = RodInput.Text
-        self:log("Rod set to: " .. CONFIG.RodName, "info")
-    end)
-
-    local EquipButton = createButton(MainPage, "Equip Rod", CONFIG.AccentColor)
-    EquipButton.MouseButton1Click:Connect(function()
-        self:equipRod(CONFIG.RodName)
-    end)
-
-    createSectionHeader(MainPage, "CONTROLS")
-
-    local ToggleButton = createButton(MainPage, "FISHER: OFF", CONFIG.ToggleOffColor, 36)
+    -- GENERAL PAGE
+    local GeneralPage = createContentPage(ContentContainer, "General")
+    local GeneralLayout = createListLayout(GeneralPage)
+    GeneralLayout.Padding = UDim.new(0, 10) 
+    
+    createSectionHeader(GeneralPage, "MAIN CONTROLS")
+    
+    local ToggleButton = createButton(GeneralPage, "GRINDER: OFF", CONFIG.ToggleOffColor, 36) 
     ToggleButton.MouseButton1Click:Connect(function()
         self.Enabled = not self.Enabled
-        if self.Enabled then
-            self.StartTime = tick()
-            self.LoopThread = task.spawn(function()
-                self:fishingLoop()
-            end)
-            self:log("Fisher enabled", "success")
+        self.CurrentTarget = nil 
+        self.CurrentTargetIdentifier = nil 
+        self.EquippedToolName = nil
+        self.TargetAcquiredTime = nil 
+        self.PriorityAreaTarget = nil
+        self.PriorityAreaScanTimer = 0
+        self.CurrentPriorityAreaIndex = 1
+        self.MiningPriorityAreaTarget = nil
+        self.MiningPriorityAreaScanTimer = 0
+        self.CurrentMiningPriorityAreaIndex = 1
+        self.LastMiningAngle = 0
+        
+        if not self.Enabled then
+            restoreCamera(self) 
         else
-            self.IsFishing = false
-            if self.LoopThread then
-                task.cancel(self.LoopThread)
-                self.LoopThread = nil
+            local hrp = self:getHumanoidRootPart()
+            if hrp then
+                self.LastKnownPosition = hrp.Position
             end
-            self:log("Fisher disabled", "info")
         end
         self:updateGUI()
     end)
 
-    local AutoCastButton = createButton(MainPage, "Auto Cast: ON", CONFIG.ToggleOnColor)
-    AutoCastButton.MouseButton1Click:Connect(function()
-        self.AutoCastEnabled = not self.AutoCastEnabled
+    local ModeButton = createButton(GeneralPage, "MODE: COMBAT", CONFIG.AccentColor, 36)
+    ModeButton.MouseButton1Click:Connect(function()
+        self.Mode = (self.Mode == "Combat" and "Mining" or "Combat")
+        self.CurrentTarget = nil 
+        self.CurrentTargetIdentifier = nil 
+        self.EquippedToolName = nil
+        self.TargetAcquiredTime = nil 
+        self.PriorityAreaTarget = nil 
+        self.MiningPriorityAreaTarget = nil
+        self.LastMiningAngle = 0
+        restoreCamera(self)
         self:updateGUI()
     end)
 
-    local AutoSolveButton = createButton(MainPage, "Auto Solve: ON", CONFIG.ToggleOnColor)
-    AutoSolveButton.MouseButton1Click:Connect(function()
-        self.AutoSolveEnabled = not self.AutoSolveEnabled
+    createSectionHeader(GeneralPage, "TARGET OPTIONS")
+    
+    local IgnoreButton = createButton(GeneralPage, "No Target", Color3.fromRGB(80, 80, 80))
+    IgnoreButton.Visible = false 
+    IgnoreButton.MouseButton1Click:Connect(function()
+        if self.Enabled and self.CurrentTargetIdentifier then 
+            self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+            print("[Multi-Bot] Manually ignored:", self.CurrentTargetIdentifier.Name)
+            self.CurrentTarget = nil 
+            self.CurrentTargetIdentifier = nil 
+            self.TargetAcquiredTime = nil 
+            self.LastMiningAngle = 0
+            restoreCamera(self)
+            self:updateGUI()
+        end
+    end)
+
+    local ClearIgnoreButton = createButton(GeneralPage, "Clear Ignore List", Color3.fromRGB(200, 140, 0))
+    ClearIgnoreButton.MouseButton1Click:Connect(function()
+        self.IgnoredTargets = {}
+        print("[Multi-Bot] Ignore list cleared")
+        if self.CurrentTargetIdentifier and self.IgnoredTargets[self.CurrentTargetIdentifier] then
+            self.CurrentTarget = nil
+            self.CurrentTargetIdentifier = nil
+            restoreCamera(self)
+        end
+        self:updateGUI()
+    end)
+    
+    local AutoIgnoreButton = createButton(GeneralPage, "Auto-Ignore: ON", CONFIG.ToggleOnColor)
+    AutoIgnoreButton.MouseButton1Click:Connect(function()
+        self.AutoIgnoreEnabled = not self.AutoIgnoreEnabled
         self:updateGUI()
     end)
 
-    createSectionHeader(MainPage, "STATS")
+    createSectionHeader(GeneralPage, "UTILITY")
+    
+    local TeleportOnRespawnButton = createButton(GeneralPage, "TP on Respawn: ON", CONFIG.ToggleOnColor)
+    TeleportOnRespawnButton.MouseButton1Click:Connect(function()
+        self.TeleportOnRespawnEnabled = not self.TeleportOnRespawnEnabled
+        self:updateGUI()
+    end)
 
-    local CastsLabel = Instance.new("TextLabel")
-    CastsLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    CastsLabel.Text = "Casts: 0"
-    CastsLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
-    CastsLabel.Font = Enum.Font.Gotham
-    CastsLabel.TextSize = 14
-    CastsLabel.BackgroundTransparency = 1
-    CastsLabel.TextXAlignment = Enum.TextXAlignment.Left
-    CastsLabel.Parent = MainPage
+    local AutoBlockButton = createButton(GeneralPage, "Auto-Block: OFF", CONFIG.ToggleOffColor)
+    AutoBlockButton.MouseButton1Click:Connect(function()
+        self.AutoBlockEnabled = not self.AutoBlockEnabled
+        self:updateGUI()
+    end)
 
-    local SuccessLabel = Instance.new("TextLabel")
-    SuccessLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    SuccessLabel.Text = "Success: 0"
-    SuccessLabel.TextColor3 = CONFIG.ToggleOnColor
-    SuccessLabel.Font = Enum.Font.Gotham
-    SuccessLabel.TextSize = 14
-    SuccessLabel.BackgroundTransparency = 1
-    SuccessLabel.TextXAlignment = Enum.TextXAlignment.Left
-    SuccessLabel.Parent = MainPage
+    local SpecialAttackButton = createButton(GeneralPage, "Special Attack: OFF", CONFIG.ToggleOffColor)
+    SpecialAttackButton.MouseButton1Click:Connect(function()
+        self.SpecialAttackEnabled = not self.SpecialAttackEnabled
+        
+        if self.SpecialAttackEnabled then
+            self:StartSpecialAttack()
+        else
+            self:StopSpecialAttack()
+        end
+        
+        self:updateGUI()
+    end)
 
-    local FailedLabel = Instance.new("TextLabel")
-    FailedLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    FailedLabel.Text = "Failed: 0"
-    FailedLabel.TextColor3 = CONFIG.ToggleOffColor
-    FailedLabel.Font = Enum.Font.Gotham
-    FailedLabel.TextSize = 14
-    FailedLabel.BackgroundTransparency = 1
-    FailedLabel.TextXAlignment = Enum.TextXAlignment.Left
-    FailedLabel.Parent = MainPage
+    local MoneyFarmButton = createButton(GeneralPage, "Money Farm: OFF", CONFIG.ToggleOffColor)
+    MoneyFarmButton.MouseButton1Click:Connect(function()
+        self.MoneyFarmEnabled = not self.MoneyFarmEnabled
+        if self.MoneyFarmEnabled then
+            self:StartMoneyFarm()
+        else
+            self:StopMoneyFarm()
+        end
+        self:updateGUI()
+    end)
+    
+    local MoneyFarmSetTPButton = createButton(GeneralPage, "Set Money Farm TP", CONFIG.AccentColor)
+    MoneyFarmSetTPButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            self.MoneyFarmTeleportLocation = hrp.CFrame
+            self:updateGUI()
+        end
+    end)
+    
+    local MoneyFarmClearTPButton = createButton(GeneralPage, "Clear Money Farm TP", Color3.fromRGB(200, 140, 0))
+    MoneyFarmClearTPButton.MouseButton1Click:Connect(function()
+        self.MoneyFarmTeleportLocation = nil
+        self:updateGUI()
+    end)
+    
+    local MoneyFarmTPLabel = Instance.new("TextLabel")
+    MoneyFarmTPLabel.Name = "MoneyFarmTPLabel"
+    MoneyFarmTPLabel.Size = UDim2.new(0.9, 0, 0, 20)
+    MoneyFarmTPLabel.Text = "TP Location: Not Set"
+    MoneyFarmTPLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+    MoneyFarmTPLabel.Font = Enum.Font.GothamBold
+    MoneyFarmTPLabel.TextSize = 13
+    MoneyFarmTPLabel.BackgroundTransparency = 1
+    MoneyFarmTPLabel.TextXAlignment = Enum.TextXAlignment.Center
+    MoneyFarmTPLabel.Parent = GeneralPage
 
-    local FishClickedLabel = Instance.new("TextLabel")
-    FishClickedLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    FishClickedLabel.Text = "Fish Clicked: 0"
-    FishClickedLabel.TextColor3 = CONFIG.AccentColor
-    FishClickedLabel.Font = Enum.Font.Gotham
-    FishClickedLabel.TextSize = 14
-    FishClickedLabel.BackgroundTransparency = 1
-    FishClickedLabel.TextXAlignment = Enum.TextXAlignment.Left
-    FishClickedLabel.Parent = MainPage
+    createSectionHeader(GeneralPage, "MOVEMENT")
+    
+    local NoclipButton = createButton(GeneralPage, "NOCLIP: OFF", CONFIG.ToggleOffColor)
+    NoclipButton.MouseButton1Click:Connect(function()
+        self:ToggleNoclip(not self.NoclipEnabled)
+        self:updateGUI()
+    end)
+    
+    local FlyButton = createButton(GeneralPage, "FLY: OFF", CONFIG.ToggleOffColor)
+    FlyButton.MouseButton1Click:Connect(function()
+        self:ToggleFly(not self.FlyEnabled)
+        self:updateGUI()
+    end)
+    
+    createInputLabel(GeneralPage, "Fly Speed:")
+    local FlySpeedInput = createTextBox(GeneralPage, tostring(self.FlySpeed), "E.g., 50, 80, 150")
+    FlySpeedInput.FocusLost:Connect(function()
+        local speed = tonumber(FlySpeedInput.Text)
+        if speed and speed > 0 then
+            self.FlySpeed = speed
+        else
+            FlySpeedInput.Text = tostring(self.FlySpeed)
+        end
+    end)
+    
+    createSectionHeader(GeneralPage, "DISTANCE SETTINGS")
+    
+    local SafeDistanceToggle = createButton(GeneralPage, "Safe Distance: OFF", CONFIG.ToggleOffColor)
+    SafeDistanceToggle.MouseButton1Click:Connect(function()
+        self.SafeDistanceEnabled = not self.SafeDistanceEnabled
+        self:updateGUI()
+    end)
+    
+    createInputLabel(GeneralPage, "Combat Safe Distance (studs):")
+    local CombatDistanceInput = createTextBox(GeneralPage, tostring(self.CombatSafeDistance), "E.g., 10")
+    CombatDistanceInput.FocusLost:Connect(function()
+        local dist = tonumber(CombatDistanceInput.Text)
+        if dist and dist >= 0 then
+            self.CombatSafeDistance = dist
+        else
+            CombatDistanceInput.Text = tostring(self.CombatSafeDistance)
+        end
+    end)
+    
+    createInputLabel(GeneralPage, "Mining Distance (studs):")
+    local MiningDistanceInput = createTextBox(GeneralPage, tostring(self.MiningSafeDistance), "E.g., 1")
+    MiningDistanceInput.FocusLost:Connect(function()
+        local dist = tonumber(MiningDistanceInput.Text)
+        if dist and dist >= 0 then
+            self.MiningSafeDistance = dist
+        else
+            MiningDistanceInput.Text = tostring(self.MiningSafeDistance)
+        end
+    end)
+    
+    local MiningHitboxToggle = createButton(GeneralPage, "Mining Hitbox+: OFF", CONFIG.ToggleOffColor)
+    MiningHitboxToggle.MouseButton1Click:Connect(function()
+        self.MiningHitboxMode = not self.MiningHitboxMode
+        self:updateGUI()
+    end)
+    
+    createSectionHeader(GeneralPage, "HEIGHT OFFSET")
+    
+    local HeightOffsetToggle = createButton(GeneralPage, "Height Offset: OFF", CONFIG.ToggleOffColor)
+    HeightOffsetToggle.MouseButton1Click:Connect(function()
+        self.HeightOffsetEnabled = not self.HeightOffsetEnabled
+        self:updateGUI()
+    end)
 
-    local SuccessRateLabel = Instance.new("TextLabel")
-    SuccessRateLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    SuccessRateLabel.Text = "Success Rate: 0%"
-    SuccessRateLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
-    SuccessRateLabel.Font = Enum.Font.Gotham
-    SuccessRateLabel.TextSize = 14
-    SuccessRateLabel.BackgroundTransparency = 1
-    SuccessRateLabel.TextXAlignment = Enum.TextXAlignment.Left
-    SuccessRateLabel.Parent = MainPage
+    createInputLabel(GeneralPage, "Combat Height Offset (studs):")
+    local CombatHeightInput = createTextBox(GeneralPage, tostring(self.CombatHeightOffset), "E.g., 5")
+    CombatHeightInput.FocusLost:Connect(function()
+        local val = tonumber(CombatHeightInput.Text)
+        if val then
+            self.CombatHeightOffset = val
+        else
+            CombatHeightInput.Text = tostring(self.CombatHeightOffset)
+        end
+    end)
 
-    local RuntimeLabel = Instance.new("TextLabel")
-    RuntimeLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    RuntimeLabel.Text = "Runtime: 00:00:00"
-    RuntimeLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
-    RuntimeLabel.Font = Enum.Font.Gotham
-    RuntimeLabel.TextSize = 14
-    RuntimeLabel.BackgroundTransparency = 1
-    RuntimeLabel.TextXAlignment = Enum.TextXAlignment.Left
-    RuntimeLabel.Parent = MainPage
+    createInputLabel(GeneralPage, "Mining Height Offset (studs):")
+    local MiningHeightInput = createTextBox(GeneralPage, tostring(self.MiningHeightOffset), "E.g., 3")
+    MiningHeightInput.FocusLost:Connect(function()
+        local val = tonumber(MiningHeightInput.Text)
+        if val then
+            self.MiningHeightOffset = val
+        else
+            MiningHeightInput.Text = tostring(self.MiningHeightOffset)
+        end
+    end)
 
-    task.spawn(function()
-        while ScreenGui and ScreenGui.Parent do
-            if self.Enabled then
-                self:updateStats()
+    createSectionHeader(GeneralPage, "CONFIG")
+    
+    local SaveSettingsButton = createButton(GeneralPage, "Save Settings", CONFIG.AccentColor)
+    SaveSettingsButton.MouseButton1Click:Connect(function()
+        self:SaveSettings()
+    end)
+    
+    local ResetSettingsButton = createButton(GeneralPage, "Reset All Settings", Color3.fromRGB(200, 140, 0))
+    ResetSettingsButton.MouseButton1Click:Connect(function()
+        self:ResetSettings()
+    end)
+
+    Pages["General"] = GeneralPage
+    
+    -- COMBAT PAGE
+    local CombatPage = createContentPage(ContentContainer, "Combat")
+    local CombatLayout = createListLayout(CombatPage)
+    CombatLayout.Padding = UDim.new(0, 10) 
+    
+    createSectionHeader(CombatPage, "COMBAT SETTINGS")
+    
+    createInputLabel(CombatPage, "Attack Weapon/Tool Name:")
+    local CToolNameInput = createTextBox(CombatPage, self.CombatToolName, "E.g., Clockwork Hammer")
+    CToolNameInput.FocusLost:Connect(function()
+        self.CombatToolName = CToolNameInput.Text
+        self.CurrentTarget = nil 
+        self.CurrentTargetIdentifier = nil 
+        self.EquippedToolName = nil
+        self:updateGUI()
+    end)
+    
+    createInputLabel(CombatPage, "Target Names (comma-separated):")
+    local CTargetNamesInput = createTextBox(CombatPage, self.CombatTargetNames, "E.g., Cavey, Bonezos")
+    CTargetNamesInput.FocusLost:Connect(function()
+        self.CombatTargetNames = CTargetNamesInput.Text
+        self.CurrentTarget = nil 
+        self.CurrentTargetIdentifier = nil 
+    end)
+    
+    createSectionHeader(CombatPage, "PRIORITY AREAS")
+    
+    createInputLabel(CombatPage, "Scan Radius (studs):")
+    local CPriorityRadiusInput = createTextBox(CombatPage, tostring(self.CombatPriorityAreaScanRadius), "E.g., 50")
+    CPriorityRadiusInput.FocusLost:Connect(function()
+        local radius = tonumber(CPriorityRadiusInput.Text)
+        if radius and radius > 0 then
+            self.CombatPriorityAreaScanRadius = radius
+        else
+            CPriorityRadiusInput.Text = tostring(self.CombatPriorityAreaScanRadius)
+        end
+    end)
+
+    createInputLabel(CombatPage, "Scan Time (sec):")
+    local CPriorityScanTimeInput = createTextBox(CombatPage, tostring(self.CombatPriorityAreaScanTime), "E.g., 3")
+    CPriorityScanTimeInput.FocusLost:Connect(function()
+        local scanTime = tonumber(CPriorityScanTimeInput.Text)
+        if scanTime and scanTime > 0 then
+            self.CombatPriorityAreaScanTime = scanTime
+        else
+            CPriorityScanTimeInput.Text = tostring(self.CombatPriorityAreaScanTime)
+        end
+    end)
+
+    local PriorityAreaToggleButton = createButton(CombatPage, "Priority Areas: OFF", CONFIG.ToggleOffColor)
+    PriorityAreaToggleButton.MouseButton1Click:Connect(function()
+        self.PriorityAreaEnabled = not self.PriorityAreaEnabled
+        self.CurrentPriorityAreaIndex = 1
+        self.PriorityAreaScanTimer = 0
+        self.PriorityAreaTarget = nil
+        self.CurrentTargetIdentifier = nil
+        self.CurrentTarget = nil 
+        restoreCamera(self)
+        self:updateGUI()
+    end)
+    
+    local AddPriorityAreaButton = createButton(CombatPage, "Add Current Position as Area", CONFIG.AccentColor)
+    AddPriorityAreaButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            table.insert(self.PriorityAreas, hrp.CFrame)
+            self:updateGUI()
+        end
+    end)
+    
+    local ClearLastAreaButton = createButton(CombatPage, "Clear Last Area", Color3.fromRGB(200, 140, 0))
+    ClearLastAreaButton.MouseButton1Click:Connect(function()
+        if #self.PriorityAreas > 0 then
+            table.remove(self.PriorityAreas)
+            if self.CurrentPriorityAreaIndex > #self.PriorityAreas then
+                self.CurrentPriorityAreaIndex = 1 
             end
-            task.wait(1)
+            self:updateGUI()
         end
     end)
 
-    Pages["Main"] = MainPage
+    local PriorityAreaCountLabel = Instance.new("TextLabel")
+    PriorityAreaCountLabel.Name = "PriorityAreaCountLabel"
+    PriorityAreaCountLabel.Size = UDim2.new(0.9, 0, 0, 20)
+    PriorityAreaCountLabel.Text = "Areas: 0"
+    PriorityAreaCountLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+    PriorityAreaCountLabel.Font = Enum.Font.GothamBold
+    PriorityAreaCountLabel.TextSize = 14
+    PriorityAreaCountLabel.BackgroundTransparency = 1
+    PriorityAreaCountLabel.TextXAlignment = Enum.TextXAlignment.Center
+    PriorityAreaCountLabel.Parent = CombatPage
 
-    -- ==================== SETTINGS PAGE ====================
-    local SettingsPage = createContentPage(ContentContainer, "Settings")
-    local SettingsLayout = createListLayout(SettingsPage)
-    SettingsLayout.Padding = UDim.new(0, 10)
-
-    createSectionHeader(SettingsPage, "TIMING")
-
-    createInputLabel(SettingsPage, "Cast Cooldown (sec):")
-    local CooldownInput = createTextBox(SettingsPage, tostring(CONFIG.CastCooldown), "E.g., 2")
-    CooldownInput.FocusLost:Connect(function()
-        local val = tonumber(CooldownInput.Text)
-        if val and val >= 0 then
-            CONFIG.CastCooldown = val
+    Pages["Combat"] = CombatPage
+    
+    -- MINING PAGE
+    local MiningPage = createContentPage(ContentContainer, "Mining")
+    local MiningLayout = createListLayout(MiningPage)
+    MiningLayout.Padding = UDim.new(0, 10) 
+    
+    createSectionHeader(MiningPage, "MINING SETTINGS")
+    
+    createInputLabel(MiningPage, "Mining Tool 1 (Primary):")
+    local MToolNameInput1 = createTextBox(MiningPage, self.MiningToolNames[1], "E.g., Eternium Pickaxe")
+    MToolNameInput1.FocusLost:Connect(function()
+        self.MiningToolNames[1] = MToolNameInput1.Text
+        self.CurrentTarget = nil 
+        self.CurrentTargetIdentifier = nil 
+        self.EquippedToolName = nil
+        self:updateGUI()
+    end)
+    
+    createInputLabel(MiningPage, "Mining Tool 2:")
+    local MToolNameInput2 = createTextBox(MiningPage, self.MiningToolNames[2], "E.g., Axe, Hammer")
+    MToolNameInput2.FocusLost:Connect(function()
+        self.MiningToolNames[2] = MToolNameInput2.Text
+    end)
+    
+    createInputLabel(MiningPage, "Mining Tool 3:")
+    local MToolNameInput3 = createTextBox(MiningPage, self.MiningToolNames[3], "E.g., Drill, Saw")
+    MToolNameInput3.FocusLost:Connect(function()
+        self.MiningToolNames[3] = MToolNameInput3.Text
+    end)
+    
+    createInputLabel(MiningPage, "Mining Tool 4:")
+    local MToolNameInput4 = createTextBox(MiningPage, self.MiningToolNames[4], "E.g., Chisel, Mallet")
+    MToolNameInput4.FocusLost:Connect(function()
+        self.MiningToolNames[4] = MToolNameInput4.Text
+    end)
+    
+    createInputLabel(MiningPage, "Resource Names (comma-separated):")
+    local MTargetNamesInput = createTextBox(MiningPage, self.MiningTargetNames, "E.g., Iron, Rock, Gold")
+    MTargetNamesInput.FocusLost:Connect(function()
+        self.MiningTargetNames = MTargetNamesInput.Text
+        self.CurrentTarget = nil 
+        self.CurrentTargetIdentifier = nil 
+    end)
+    
+    createSectionHeader(MiningPage, "PRIORITY AREAS")
+    
+    createInputLabel(MiningPage, "Scan Radius (studs):")
+    local MPriorityRadiusInput = createTextBox(MiningPage, tostring(self.MiningPriorityAreaScanRadius), "E.g., 30")
+    MPriorityRadiusInput.FocusLost:Connect(function()
+        local radius = tonumber(MPriorityRadiusInput.Text)
+        if radius and radius > 0 then
+            self.MiningPriorityAreaScanRadius = radius
         else
-            CooldownInput.Text = tostring(CONFIG.CastCooldown)
+            MPriorityRadiusInput.Text = tostring(self.MiningPriorityAreaScanRadius)
         end
     end)
 
-    createInputLabel(SettingsPage, "Click Delay (sec):")
-    local ClickDelayInput = createTextBox(SettingsPage, tostring(CONFIG.ClickDelay), "E.g., 0.05")
-    ClickDelayInput.FocusLost:Connect(function()
-        local val = tonumber(ClickDelayInput.Text)
-        if val and val >= 0 then
-            CONFIG.ClickDelay = val
+    createInputLabel(MiningPage, "Scan Time (sec):")
+    local MPriorityScanTimeInput = createTextBox(MiningPage, tostring(self.MiningPriorityAreaScanTime), "E.g., 3")
+    MPriorityScanTimeInput.FocusLost:Connect(function()
+        local scanTime = tonumber(MPriorityScanTimeInput.Text)
+        if scanTime and scanTime > 0 then
+            self.MiningPriorityAreaScanTime = scanTime
         else
-            ClickDelayInput.Text = tostring(CONFIG.ClickDelay)
+            MPriorityScanTimeInput.Text = tostring(self.MiningPriorityAreaScanTime)
         end
     end)
 
-    createSectionHeader(SettingsPage, "CLICK METHOD")
-
-    local ClickMethodButton = createButton(SettingsPage, "Method: VIM", CONFIG.AccentColor)
-    ClickMethodButton.MouseButton1Click:Connect(function()
-        self.ClickMethod = (self.ClickMethod == "VIM") and "Direct" or "VIM"
+    local MiningPriorityAreaToggleButton = createButton(MiningPage, "Priority Areas: OFF", CONFIG.ToggleOffColor)
+    MiningPriorityAreaToggleButton.MouseButton1Click:Connect(function()
+        self.MiningPriorityAreaEnabled = not self.MiningPriorityAreaEnabled
+        self.CurrentMiningPriorityAreaIndex = 1
+        self.MiningPriorityAreaScanTimer = 0
+        self.MiningPriorityAreaTarget = nil
+        self.CurrentTargetIdentifier = nil
+        self.CurrentTarget = nil
+        self.LastMiningAngle = 0
+        restoreCamera(self)
         self:updateGUI()
     end)
+    
+    local MiningAddPriorityAreaButton = createButton(MiningPage, "Add Current Position as Area", CONFIG.AccentColor)
+    MiningAddPriorityAreaButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            table.insert(self.MiningPriorityAreas, hrp.CFrame)
+            self:updateGUI()
+        end
+    end)
+    
+    local MiningClearLastAreaButton = createButton(MiningPage, "Clear Last Area", Color3.fromRGB(200, 140, 0))
+    MiningClearLastAreaButton.MouseButton1Click:Connect(function()
+        if #self.MiningPriorityAreas > 0 then
+            table.remove(self.MiningPriorityAreas)
+            if self.CurrentMiningPriorityAreaIndex > #self.MiningPriorityAreas then
+                self.CurrentMiningPriorityAreaIndex = 1
+            end
+            self:updateGUI()
+        end
+    end)
 
-    createSectionHeader(SettingsPage, "SAFETY")
+    local MiningPriorityAreaCountLabel = Instance.new("TextLabel")
+    MiningPriorityAreaCountLabel.Name = "MiningPriorityAreaCountLabel"
+    MiningPriorityAreaCountLabel.Size = UDim2.new(0.9, 0, 0, 20)
+    MiningPriorityAreaCountLabel.Text = "Areas: 0"
+    MiningPriorityAreaCountLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+    MiningPriorityAreaCountLabel.Font = Enum.Font.GothamBold
+    MiningPriorityAreaCountLabel.TextSize = 14
+    MiningPriorityAreaCountLabel.BackgroundTransparency = 1
+    MiningPriorityAreaCountLabel.TextXAlignment = Enum.TextXAlignment.Center
+    MiningPriorityAreaCountLabel.Parent = MiningPage
 
-    local StopOnFailButton = createButton(SettingsPage, "Stop On Fail: OFF", CONFIG.ToggleOffColor)
-    StopOnFailButton.MouseButton1Click:Connect(function()
-        self.StopOnFail = not self.StopOnFail
+    Pages["Mining"] = MiningPage
+
+    -- SELLER PAGE
+    local SellerPage = createContentPage(ContentContainer, "Seller")
+    local SellerLayout = createListLayout(SellerPage)
+    SellerLayout.Padding = UDim.new(0, 10)
+    
+    createSectionHeader(SellerPage, "SELLER CONTROLS")
+    
+    local SellerToggleButton = createButton(SellerPage, "AUTO SELL: OFF", CONFIG.ToggleOffColor, 36)
+    SellerToggleButton.MouseButton1Click:Connect(function()
+        self.SellerEnabled = not self.SellerEnabled
+        if self.SellerEnabled then
+            self:StartSelling()
+        else
+            self:StopSelling()
+        end
         self:updateGUI()
     end)
+    
+    createSectionHeader(SellerPage, "ITEM SETTINGS")
+    
+    createInputLabel(SellerPage, "Item Name:")
+    local SellerItemNameInput = createTextBox(SellerPage, self.SellerItemName, "E.g., Crystal, Iron Ore")
+    SellerItemNameInput.FocusLost:Connect(function()
+        self.SellerItemName = SellerItemNameInput.Text
+        self:SaveSettings()
+    end)
+    
+    createInputLabel(SellerPage, "Amount to Sell:")
+    local SellerAmountInput = createTextBox(SellerPage, tostring(self.SellerAmount), "E.g., 1, 5, 99")
+    SellerAmountInput.FocusLost:Connect(function()
+        local amt = tonumber(SellerAmountInput.Text)
+        if amt and amt > 0 then
+            self.SellerAmount = math.floor(amt)
+            self:updateGUI()
+            self:SaveSettings()
+        else
+            SellerAmountInput.Text = tostring(self.SellerAmount)
+        end
+    end)
+    
+    createSectionHeader(SellerPage, "SPEED SETTINGS")
+    
+    createInputLabel(SellerPage, "Cooldown (seconds):")
+    local SellerCooldownInput = createTextBox(SellerPage, tostring(self.SellerCooldown), "E.g., 0.05, 0.1, 0.5")
+    SellerCooldownInput.FocusLost:Connect(function()
+        local cd = tonumber(SellerCooldownInput.Text)
+        if cd and cd >= 0 then
+            self.SellerCooldown = cd
+            self:SaveSettings()
+        else
+            SellerCooldownInput.Text = tostring(self.SellerCooldown)
+        end
+    end)
+    
+    createSectionHeader(SellerPage, "STATS")
+    
+    local SellerTotalLabel = Instance.new("TextLabel")
+    SellerTotalLabel.Name = "TotalLabel"
+    SellerTotalLabel.Size = UDim2.new(0.9, 0, 0, 20)
+    SellerTotalLabel.Text = "Total Sold: 0"
+    SellerTotalLabel.TextColor3 = CONFIG.AccentColor
+    SellerTotalLabel.Font = Enum.Font.GothamBold
+    SellerTotalLabel.TextSize = 14
+    SellerTotalLabel.BackgroundTransparency = 1
+    SellerTotalLabel.TextXAlignment = Enum.TextXAlignment.Center
+    SellerTotalLabel.Parent = SellerPage
+    
+    createSectionHeader(SellerPage, "CONFIG")
+    
+    local SellerSaveButton = createButton(SellerPage, "Save Settings", CONFIG.AccentColor)
+    SellerSaveButton.MouseButton1Click:Connect(function()
+        self:SaveSettings()
+    end)
+    
+    local SellerResetButton = createButton(SellerPage, "Reset Settings", Color3.fromRGB(200, 140, 0))
+    SellerResetButton.MouseButton1Click:Connect(function()
+        self:ResetSettings()
+    end)
+    
+    Pages["Seller"] = SellerPage
 
-    local DebugModeButton = createButton(SettingsPage, "Debug Mode: OFF", CONFIG.ToggleOffColor)
-    DebugModeButton.MouseButton1Click:Connect(function()
-        self.DebugMode = not self.DebugMode
+    -- EVENTS PAGE (NEW)
+    local EventsPage = createContentPage(ContentContainer, "Events")
+    local EventsLayout = createListLayout(EventsPage)
+    EventsLayout.Padding = UDim.new(0, 10)
+    
+    createSectionHeader(EventsPage, "EVENT DETECTION")
+    
+    createInputLabel(EventsPage, "Event Start Keyword:")
+    local EventStartInput = createTextBox(EventsPage, self.EventStartKeyword, "E.g., Event Started")
+    EventStartInput.FocusLost:Connect(function()
+        self.EventStartKeyword = EventStartInput.Text
+    end)
+    
+    createInputLabel(EventsPage, "Event End Keyword:")
+    local EventEndInput = createTextBox(EventsPage, self.EventEndKeyword, "E.g., Event Ended")
+    EventEndInput.FocusLost:Connect(function()
+        self.EventEndKeyword = EventEndInput.Text
+    end)
+    
+    createSectionHeader(EventsPage, "EVENT TARGETS")
+    
+    createInputLabel(EventsPage, "Event Mob Names (comma-separated):")
+    local EventTargetInput = createTextBox(EventsPage, self.EventTargetNames, "E.g., Boss, Event Mob")
+    EventTargetInput.FocusLost:Connect(function()
+        self.EventTargetNames = EventTargetInput.Text
+    end)
+    
+    createSectionHeader(EventsPage, "EVENT PRIORITY AREAS")
+    
+    createInputLabel(EventsPage, "Scan Radius (studs):")
+    local EventRadiusInput = createTextBox(EventsPage, tostring(self.EventPriorityAreaScanRadius), "E.g., 50")
+    EventRadiusInput.FocusLost:Connect(function()
+        local radius = tonumber(EventRadiusInput.Text)
+        if radius and radius > 0 then
+            self.EventPriorityAreaScanRadius = radius
+        else
+            EventRadiusInput.Text = tostring(self.EventPriorityAreaScanRadius)
+        end
+    end)
+
+    createInputLabel(EventsPage, "Scan Time (sec):")
+    local EventScanTimeInput = createTextBox(EventsPage, tostring(self.EventPriorityAreaScanTime), "E.g., 3")
+    EventScanTimeInput.FocusLost:Connect(function()
+        local scanTime = tonumber(EventScanTimeInput.Text)
+        if scanTime and scanTime > 0 then
+            self.EventPriorityAreaScanTime = scanTime
+        else
+            EventScanTimeInput.Text = tostring(self.EventPriorityAreaScanTime)
+        end
+    end)
+
+    local EventPriorityToggle = createButton(EventsPage, "Priority Areas: OFF", CONFIG.ToggleOffColor)
+    EventPriorityToggle.MouseButton1Click:Connect(function()
+        self.EventPriorityAreaEnabled = not self.EventPriorityAreaEnabled
+        self.CurrentEventAreaIndex = 1
+        self.EventAreaScanTimer = 0
+        self.EventAreaTarget = nil
+        self.CurrentTargetIdentifier = nil
+        self.CurrentTarget = nil
+        restoreCamera(self)
         self:updateGUI()
     end)
-
-    createSectionHeader(SettingsPage, "TOOLS")
-
-    local InspectButton = createButton(SettingsPage, "Inspect GUI", CONFIG.InfoColor)
-    InspectButton.MouseButton1Click:Connect(function()
-        self:inspectGui()
+    
+    local EventAddAreaButton = createButton(EventsPage, "Add Current Position as Area", CONFIG.AccentColor)
+    EventAddAreaButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            table.insert(self.EventPriorityAreas, hrp.CFrame)
+            self:updateGUI()
+        end
+    end)
+    
+    local EventClearAreaButton = createButton(EventsPage, "Clear Last Area", Color3.fromRGB(200, 140, 0))
+    EventClearAreaButton.MouseButton1Click:Connect(function()
+        if #self.EventPriorityAreas > 0 then
+            table.remove(self.EventPriorityAreas)
+            if self.CurrentEventAreaIndex > #self.EventPriorityAreas then
+                self.CurrentEventAreaIndex = 1
+            end
+            self:updateGUI()
+        end
     end)
 
-    local ResetStatsButton = createButton(SettingsPage, "Reset Stats", CONFIG.WarningColor)
-    ResetStatsButton.MouseButton1Click:Connect(function()
-        self.CastsTotal = 0
-        self.CastsSuccess = 0
-        self.CastsFailed = 0
-        self.FishClickedTotal = 0
-        self.StartTime = tick()
-        self:updateStats()
-        self:log("Stats reset", "info")
-    end)
+    local EventAreaCountLabel = Instance.new("TextLabel")
+    EventAreaCountLabel.Name = "EventAreaCountLabel"
+    EventAreaCountLabel.Size = UDim2.new(0.9, 0, 0, 20)
+    EventAreaCountLabel.Text = "Areas: 0"
+    EventAreaCountLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+    EventAreaCountLabel.Font = Enum.Font.GothamBold
+    EventAreaCountLabel.TextSize = 14
+    EventAreaCountLabel.BackgroundTransparency = 1
+    EventAreaCountLabel.TextXAlignment = Enum.TextXAlignment.Center
+    EventAreaCountLabel.Parent = EventsPage
 
-    Pages["Settings"] = SettingsPage
+    createSectionHeader(EventsPage, "STATUS")
+    
+    local EventStatusLabel = Instance.new("TextLabel")
+    EventStatusLabel.Name = "EventStatusLabel"
+    EventStatusLabel.Size = UDim2.new(0.9, 0, 0, 22)
+    EventStatusLabel.Text = "Event Mode: INACTIVE"
+    EventStatusLabel.TextColor3 = CONFIG.ToggleOffColor
+    EventStatusLabel.Font = Enum.Font.GothamBold
+    EventStatusLabel.TextSize = 14
+    EventStatusLabel.BackgroundTransparency = 1
+    EventStatusLabel.TextXAlignment = Enum.TextXAlignment.Center
+    EventStatusLabel.Parent = EventsPage
 
-    -- ==================== LOGS PAGE ====================
-    local LogsPage = createContentPage(ContentContainer, "Logs")
-    local LogsLayout = createListLayout(LogsPage)
-    LogsLayout.Padding = UDim.new(0, 5)
+    Pages["Events"] = EventsPage
 
-    createSectionHeader(LogsPage, "CONSOLE")
-
-    local LogText = Instance.new("TextLabel")
-    LogText.Name = "LogText"
-    LogText.Size = UDim2.new(0.95, 0, 0, 300)
-    LogText.Text = "Ready...\n"
-    LogText.TextColor3 = Color3.fromRGB(200, 200, 220)
-    LogText.Font = Enum.Font.Code
-    LogText.TextSize = 12
-    LogText.BackgroundTransparency = 1
-    LogText.TextXAlignment = Enum.TextXAlignment.Left
-    LogText.TextYAlignment = Enum.TextYAlignment.Top
-    LogText.Parent = LogsPage
-    LogText.TextWrapped = true
-
-    Pages["Logs"] = LogsPage
-
+    -- Store GUI references
     self.MainGui = {
         ScreenGui = ScreenGui,
         MainFrame = MainFrame,
         MinimizeButton = MinimizeButton,
         Tabs = Tabs,
         Pages = Pages,
-        MainPage = {
+        GeneralPage = {
             ToggleButton = ToggleButton,
-            AutoCastButton = AutoCastButton,
-            AutoSolveButton = AutoSolveButton,
-            CastsLabel = CastsLabel,
-            SuccessLabel = SuccessLabel,
-            FailedLabel = FailedLabel,
-            FishClickedLabel = FishClickedLabel,
-            SuccessRateLabel = SuccessRateLabel,
-            RuntimeLabel = RuntimeLabel,
-            RodInput = RodInput,
-            EquipButton = EquipButton,
+            ModeButton = ModeButton,
+            IgnoreButton = IgnoreButton,
+            ClearIgnoreButton = ClearIgnoreButton,
+            AutoIgnoreButton = AutoIgnoreButton,
+            TeleportOnRespawnButton = TeleportOnRespawnButton,
+            AutoBlockButton = AutoBlockButton,
+            SpecialAttackButton = SpecialAttackButton,
+            MoneyFarmButton = MoneyFarmButton,
+            MoneyFarmSetTPButton = MoneyFarmSetTPButton,
+            MoneyFarmClearTPButton = MoneyFarmClearTPButton,
+            MoneyFarmTPLabel = MoneyFarmTPLabel,
+            SafeDistanceToggle = SafeDistanceToggle,
+            NoclipButton = NoclipButton,
+            FlyButton = FlyButton,
+            FlySpeedInput = FlySpeedInput,
+            CombatDistanceInput = CombatDistanceInput,
+            MiningDistanceInput = MiningDistanceInput,
+            MiningHitboxToggle = MiningHitboxToggle,
+            HeightOffsetToggle = HeightOffsetToggle,
+            CombatHeightInput = CombatHeightInput,
+            MiningHeightInput = MiningHeightInput,
+            SaveSettingsButton = SaveSettingsButton,
+            ResetSettingsButton = ResetSettingsButton
         },
-        SettingsPage = {
-            CooldownInput = CooldownInput,
-            ClickDelayInput = ClickDelayInput,
-            ClickMethodButton = ClickMethodButton,
-            StopOnFailButton = StopOnFailButton,
-            DebugModeButton = DebugModeButton,
+        CombatPage = {
+            ToolNameInput = CToolNameInput,
+            TargetNamesInput = CTargetNamesInput,
+            PriorityAreaToggleButton = PriorityAreaToggleButton,
+            AddPriorityAreaButton = AddPriorityAreaButton,
+            ClearLastAreaButton = ClearLastAreaButton,
+            PriorityAreaCountLabel = PriorityAreaCountLabel,
+            CombatPriorityRadiusInput = CPriorityRadiusInput,
+            CombatPriorityScanTimeInput = CPriorityScanTimeInput,
         },
-        LogsPage = {
-            LogText = LogText,
+        MiningPage = {
+            ToolNameInput1 = MToolNameInput1,
+            ToolNameInput2 = MToolNameInput2,
+            ToolNameInput3 = MToolNameInput3,
+            ToolNameInput4 = MToolNameInput4,
+            TargetNamesInput = MTargetNamesInput,
+            MiningPriorityAreaToggleButton = MiningPriorityAreaToggleButton,
+            MiningAddPriorityAreaButton = MiningAddPriorityAreaButton,
+            MiningClearLastAreaButton = MiningClearLastAreaButton,
+            MiningPriorityAreaCountLabel = MiningPriorityAreaCountLabel,
+            MiningPriorityRadiusInput = MPriorityRadiusInput,
+            MiningPriorityScanTimeInput = MPriorityScanTimeInput,
+        },
+        SellerPage = {
+            ToggleButton = SellerToggleButton,
+            ItemNameInput = SellerItemNameInput,
+            AmountInput = SellerAmountInput,
+            CooldownInput = SellerCooldownInput,
+            TotalLabel = SellerTotalLabel,
+        },
+        EventsPage = {
+            StartKeywordInput = EventStartInput,
+            EndKeywordInput = EventEndInput,
+            TargetNamesInput = EventTargetInput,
+            PriorityAreaToggleButton = EventPriorityToggle,
+            AddPriorityAreaButton = EventAddAreaButton,
+            ClearLastAreaButton = EventClearAreaButton,
+            PriorityAreaCountLabel = EventAreaCountLabel,
+            PriorityRadiusInput = EventRadiusInput,
+            PriorityScanTimeInput = EventScanTimeInput,
+            StatusLabel = EventStatusLabel,
         }
     }
 
     MinimizeButton.MouseButton1Click:Connect(function()
         self:setMinimizedState(not self.IsMinimized)
+        MinimizeButton.Text = self.IsMinimized and "+" or "−"
     end)
 
     CloseButton.MouseButton1Click:Connect(function()
-        self.Enabled = false
-        if self.LoopThread then
-            task.cancel(self.LoopThread)
+        if self.LoopThread then 
+            task.cancel(self.LoopThread) 
         end
+        self:StopSpecialAttack()
+        if self.MoneyFarmEnabled then
+            self:StopMoneyFarm()
+        end
+        if self.SellerEnabled then
+            self:StopSelling()
+        end
+        if self.NoclipEnabled then
+            self:ToggleNoclip(false)
+        end
+        if self.FlyEnabled then
+            self:ToggleFly(false)
+        end
+        restoreCamera(self)
         ScreenGui:Destroy()
     end)
-
+    
     self:setMinimizedState(self.IsMinimized)
+    MinimizeButton.Text = self.IsMinimized and "+" or "−"
     self:showTab(self.CurrentTab)
-    self:updateGUI()
 end
 
--- ==================== UI MANAGEMENT ====================
+-- MAIN LOOP
+function MultiGrinder:start()
+    self:setupGUI()
+    
+    self.LoopThread = task.spawn(function()
+        while task.wait(CONFIG.FarmSpeed) do
+            if self.AutoBlockEnabled and self.Remotes.Block then
+                pcall(function()
+                    self.Remotes.Block:FireServer(true)
+                end)
+            end
 
-function StudlandsFisher:showTab(tabName)
-    self.CurrentTab = tabName
-    self:updateGUI()
-
-    local contentContainer = self.MainGui.MainFrame:FindFirstChild("ContentContainer")
-    if not contentContainer then return end
-
-    for _, page in pairs(contentContainer:GetChildren()) do
-        if page:IsA("Frame") and page.Name:match("Page$") then
-            page.Visible = false
+            if self.Enabled then
+                local hrp = self:getHumanoidRootPart()
+                if hrp then
+                    if self.EventMode then
+                        self:executeEventAction(hrp)
+                    elseif self.Mode == "Combat" then
+                        self:executeCombatAction(hrp)
+                    elseif self.Mode == "Mining" then
+                        self:executeMiningAction(hrp)
+                    end
+                end
+            end
         end
-    end
-
-    if self.MainGui.Pages[tabName] then
-        self.MainGui.Pages[tabName].Visible = true
-        task.wait()
-        local layout = self.MainGui.Pages[tabName]:FindFirstChildOfClass("UIListLayout")
-        if layout then
-            contentContainer.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 20)
-        end
-        contentContainer.CanvasPosition = Vector2.new(0, 0)
-    end
+    end)
 end
 
-function StudlandsFisher:setMinimizedState(isMinimized)
-    self.IsMinimized = isMinimized
-    if not self.MainGui or not self.MainGui.MainFrame then return end
-
-    local MainFrame = self.MainGui.MainFrame
-    local ContentContainer = MainFrame:FindFirstChild("ContentContainer")
-    local TabBar = MainFrame:FindFirstChild("TabBar")
-
-    if not ContentContainer or not TabBar then return end
-
-    ContentContainer.Visible = not isMinimized
-    TabBar.Visible = not isMinimized
-
-    if isMinimized then
-        MainFrame:TweenSize(UDim2.new(0, CONFIG.FrameWidth, 0, CONFIG.TitleBarHeight), "Out", "Quad", 0.2, true)
-    else
-        MainFrame:TweenSize(UDim2.new(0, CONFIG.FrameWidth, 0, self.InitialFrameHeight), "Out", "Quad", 0.2, true)
-    end
-
-    self.MainGui.MinimizeButton.Text = isMinimized and "+" or "−"
-end
-
-function StudlandsFisher:updateGUI()
-    if not self.MainGui then return end
-
-    local main = self.MainGui.MainPage
-    local settings = self.MainGui.SettingsPage
-
-    if self.Enabled then
-        main.ToggleButton.Text = "FISHER: ON"
-        main.ToggleButton.BackgroundColor3 = CONFIG.ToggleOnColor
-    else
-        main.ToggleButton.Text = "FISHER: OFF"
-        main.ToggleButton.BackgroundColor3 = CONFIG.ToggleOffColor
-    end
-
-    main.AutoCastButton.Text = self.AutoCastEnabled and "Auto Cast: ON" or "Auto Cast: OFF"
-    main.AutoCastButton.BackgroundColor3 = self.AutoCastEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
-
-    main.AutoSolveButton.Text = self.AutoSolveEnabled and "Auto Solve: ON" or "Auto Solve: OFF"
-    main.AutoSolveButton.BackgroundColor3 = self.AutoSolveEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
-
-    settings.ClickMethodButton.Text = "Method: " .. self.ClickMethod
-    settings.ClickMethodButton.BackgroundColor3 = self.ClickMethod == "VIM" and CONFIG.AccentColor or CONFIG.InfoColor
-
-    settings.StopOnFailButton.Text = self.StopOnFail and "Stop On Fail: ON" or "Stop On Fail: OFF"
-    settings.StopOnFailButton.BackgroundColor3 = self.StopOnFail and CONFIG.ToggleOffColor or CONFIG.ToggleOffColor
-
-    settings.DebugModeButton.Text = self.DebugMode and "Debug Mode: ON" or "Debug Mode: OFF"
-    settings.DebugModeButton.BackgroundColor3 = self.DebugMode and CONFIG.WarningColor or CONFIG.ToggleOffColor
-
-    for tabName, tabButton in pairs(self.MainGui.Tabs) do
-        if tabName == self.CurrentTab then
-            tabButton.BackgroundColor3 = CONFIG.BackgroundColor
-            tabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-            tabButton.Font = Enum.Font.GothamBold
-        else
-            tabButton.BackgroundColor3 = CONFIG.TabBarColor
-            tabButton.TextColor3 = Color3.fromRGB(150, 150, 150)
-            tabButton.Font = Enum.Font.Gotham
-        end
-    end
-end
-
--- ==================== EXECUTION ====================
-
-local fisher = StudlandsFisher:new()
-fisher:log("Studlands Fisher loaded. Enter rod name and click Equip, then enable fisher.", "info")
+-- SCRIPT EXECUTION
+pcall(function()
+    local bot = MultiGrinder:new()
+    bot:start()
+end)
