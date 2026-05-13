@@ -196,7 +196,7 @@ function MultiGrinder:new()
         MoneyFarmConnection = nil,
         MoneyFarmTeleportLocation = nil,
         MoneyFarmLastReset = 0,
-        MoneyFarmResetInterval = 1800, -- 30 minutes
+        MoneyFarmResetInterval = 180000000000, -- 30 minutes
         
         -- Fly Speed
         FlySpeed = CONFIG.FlySpeed,
