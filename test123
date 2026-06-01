@@ -18,7 +18,7 @@ local CONFIG = {
     ScriptName = "Studlands Grinder",
     DefaultMode = "Combat", 
     FarmSpeed = 0.25,
-    SpecialAttackCooldown = 0.01,
+    SpecialAttackCooldown = 0.0001,
     FlySpeed = 80,
     
     FrameWidth = 280, 
@@ -91,7 +91,7 @@ local function getRemotes()
     return remotes
 end
 
--- NEW: Sell Remote Finder
+-- Sell Remote Finder
 local function getSellRemote()
     local remote = nil
     local success = pcall(function()
@@ -126,7 +126,7 @@ function MultiGrinder:new()
         CombatToolName = CONFIG.Combat.ToolName,
         CombatTargetNames = table.concat(CONFIG.Combat.TargetNames, ", "), 
         
-        -- NEW: 4 Mining Tools
+        -- 4 Mining Tools
         MiningToolNames = {CONFIG.Mining.ToolName, "", "", ""},
         CurrentMiningToolIndex = 1,
         LastToolWarningTime = 0,
@@ -137,6 +137,9 @@ function MultiGrinder:new()
         IgnoredTargets = {},
         TargetAcquiredTime = nil, 
         AutoIgnoreEnabled = true, 
+        
+        -- NEW: Exact match toggle
+        ExactMatchEnabled = false,
         
         LastKnownPosition = nil,
         TeleportOnRespawnEnabled = true,
@@ -188,12 +191,15 @@ function MultiGrinder:new()
         CombatHeightOffset = CONFIG.CombatHeightOffset,
         MiningHeightOffset = CONFIG.MiningHeightOffset,
         
-        -- Money Farm
+        -- Money Farm (STACKING)
         MoneyFarmEnabled = false,
-        MoneyFarmConnection = nil,
-        MoneyFarmTeleportLocation = nil,
+        MoneyFarmConnections = {},
+        MoneyFarmRenderLocation = nil,
+        MoneyFarmSpotLocation = nil,
         MoneyFarmLastReset = 0,
-        MoneyFarmResetInterval = 1800, -- 30 minutes
+        MoneyFarmResetInterval = 180000000000, -- 30 minutes
+        MoneyFarmStackCount = 1,
+        MoneyFarmResetThread = nil,
         
         -- Fly Speed
         FlySpeed = CONFIG.FlySpeed,
@@ -207,7 +213,7 @@ function MultiGrinder:new()
         SellerThread = nil,
         TotalSold = 0,
         
-        -- NEW: Event System
+        -- Event System
         EventMode = false,
         EventStartKeyword = "",
         EventEndKeyword = "",
@@ -289,7 +295,19 @@ function MultiGrinder:SetupAntiAfk()
     end)
 end
 
--- NEW: Tool Warning Detection
+-- NEW: Helper to get first valid mining tool from current index
+function MultiGrinder:getActiveMiningToolName()
+    for i = self.CurrentMiningToolIndex, 4 do
+        local name = self.MiningToolNames[i]
+        if name and name ~= "" then
+            self.CurrentMiningToolIndex = i
+            return name
+        end
+    end
+    return nil
+end
+
+-- Tool Warning Detection
 function MultiGrinder:SetupToolWarningDetection()
     local playerGui = LocalPlayer:WaitForChild("PlayerGui")
     local startupTime = tick()
@@ -298,7 +316,7 @@ function MultiGrinder:SetupToolWarningDetection()
         if not (obj:IsA("TextLabel") or obj:IsA("TextButton")) then return end
         
         local function handle()
-            if tick() - startupTime < 2 then return end -- Grace period on load
+            if tick() - startupTime < 2 then return end
             if string.find(obj.Text, "You need a better or different tool") then
                 self:HandleToolWarning()
             end
@@ -342,16 +360,17 @@ function MultiGrinder:HandleToolWarning()
         self.CurrentTargetIdentifier = nil
         self.CurrentMiningToolIndex = 1
         self.EquippedToolName = nil
+        self.TargetAcquiredTime = nil
         restoreCamera(self)
         self:updateGUI()
     else
         self.CurrentMiningToolIndex = nextIndex
-        self.EquippedToolName = nil -- Force re-equip next loop
+        self.EquippedToolName = nil
         print("[Multi-Bot] Tool warning detected, switching to:", self.MiningToolNames[nextIndex])
     end
 end
 
--- NEW: Chat Detection for Events
+-- Chat Detection for Events
 function MultiGrinder:SetupChatDetection()
     local success = pcall(function()
         local TextChatService = game:GetService("TextChatService")
@@ -390,7 +409,7 @@ function MultiGrinder:SetupChatDetection()
     end
 end
 
--- NEW: Event Mode Control
+-- Event Mode Control
 function MultiGrinder:StartEventMode()
     if self.EventMode then return end
     print("[Multi-Bot] Event started! Switching to event mode.")
@@ -404,7 +423,6 @@ function MultiGrinder:StartEventMode()
         SellerEnabled = self.SellerEnabled,
     }
     
-    -- Pause other systems
     if self.MoneyFarmEnabled then
         self:StopMoneyFarm()
     end
@@ -439,7 +457,6 @@ function MultiGrinder:EndEventMode()
     self.PriorityAreaEnabled = self.PreEventState.PriorityAreaEnabled or false
     self.MiningPriorityAreaEnabled = self.PreEventState.MiningPriorityAreaEnabled or false
     
-    -- Restore other systems
     if self.PreEventState.MoneyFarmEnabled then
         self:StartMoneyFarm()
     end
@@ -466,7 +483,14 @@ function MultiGrinder:StartSpecialAttack()
                 local char = LocalPlayer.Character
                 if not char then return end
                 
-                local toolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolNames[1]
+                local toolName
+                if self.Mode == "Combat" then
+                    toolName = self.CombatToolName
+                else
+                    toolName = self:getActiveMiningToolName()
+                end
+                if not toolName then return end
+                
                 local tool = char:FindFirstChild(toolName)
                 
                 if tool and self.Remotes.UseItem then
@@ -494,40 +518,56 @@ function MultiGrinder:StopSpecialAttack()
     self.SpecialAttackEnabled = false
 end
 
--- MONEY FARM FUNCTIONALITY
+-- MONEY FARM FUNCTIONALITY (STACKING)
 function MultiGrinder:StartMoneyFarm()
-    if self.MoneyFarmConnection then return end
+    if #self.MoneyFarmConnections > 0 then return end
     
-    if self.MoneyFarmTeleportLocation then
-        local hrp = self:getHumanoidRootPart()
-        if hrp then
-            hrp.CFrame = self.MoneyFarmTeleportLocation
-        end
+    -- Teleport sequence (once)
+    if self.MoneyFarmRenderLocation or self.MoneyFarmSpotLocation then
+        task.spawn(function()
+            task.wait(5)
+            if self.MoneyFarmEnabled and #self.MoneyFarmConnections > 0 then
+                local hrp = self:getHumanoidRootPart()
+                if hrp then
+                    if self.MoneyFarmRenderLocation then
+                        hrp.CFrame = self.MoneyFarmRenderLocation
+                        task.wait(2)
+                    end
+                    if self.MoneyFarmSpotLocation and self.MoneyFarmEnabled then
+                        hrp.CFrame = self.MoneyFarmSpotLocation
+                    end
+                end
+            end
+        end)
     end
     
     self.MoneyFarmLastReset = tick()
     
-    self.MoneyFarmConnection = RunService.Heartbeat:Connect(function()
-        local success, err = pcall(function()
-            if not self.Remotes.DialogEvent then return end
-            
-            local args = {
-                [1] = workspace.NPCs:FindFirstChild("Blacksmith Cubey"),
-                [2] = "StartQuest",
-                [3] = {
-                    ["QuestName"] = "Find Blacksmith's Crystal"
+    -- Stack multiple Heartbeat connections
+    for i = 1, self.MoneyFarmStackCount do
+        local conn = RunService.Heartbeat:Connect(function()
+            local success, err = pcall(function()
+                if not self.Remotes.DialogEvent then return end
+                
+                local args = {
+                    [1] = workspace.NPCs:FindFirstChild("Blacksmith Cubey"),
+                    [2] = "StartQuest",
+                    [3] = {
+                        ["QuestName"] = "Find Blacksmith's Crystal"
+                    }
                 }
-            }
+                
+                if args[1] then
+                    self.Remotes.DialogEvent:FireServer(unpack(args))
+                end
+            end)
             
-            if args[1] then
-                self.Remotes.DialogEvent:FireServer(unpack(args))
+            if not success then
+                warn("[Multi-Bot] Money Farm error: " .. tostring(err))
             end
         end)
-        
-        if not success then
-            warn("[Multi-Bot] Money Farm error: " .. tostring(err))
-        end
-    end)
+        table.insert(self.MoneyFarmConnections, conn)
+    end
     
     -- 30 minute auto-reset loop
     self.MoneyFarmResetThread = task.spawn(function()
@@ -549,10 +589,12 @@ function MultiGrinder:StartMoneyFarm()
 end
 
 function MultiGrinder:StopMoneyFarm()
-    if self.MoneyFarmConnection then
-        self.MoneyFarmConnection:Disconnect()
-        self.MoneyFarmConnection = nil
+    for _, conn in ipairs(self.MoneyFarmConnections) do
+        if conn then
+            conn:Disconnect()
+        end
     end
+    self.MoneyFarmConnections = {}
     if self.MoneyFarmResetThread then
         task.cancel(self.MoneyFarmResetThread)
         self.MoneyFarmResetThread = nil
@@ -733,6 +775,7 @@ function MultiGrinder:getTargetNames(mode)
     return names
 end
 
+-- MODIFIED: Supports exact match toggle
 function MultiGrinder:findClosestTarget(position, names)
     local currentTime = tick()
     if currentTime - self.LastSearchTime < self.SearchCooldown and self.TargetCache.LastPosition then
@@ -749,7 +792,14 @@ function MultiGrinder:findClosestTarget(position, names)
     local descendants = Workspace:GetDescendants()
     for _, obj in ipairs(descendants) do
         for _, name in ipairs(names) do
-            if string.find(string.lower(obj.Name), string.lower(name)) then
+            local match = false
+            if self.ExactMatchEnabled then
+                match = string.lower(obj.Name) == string.lower(name)
+            else
+                match = string.find(string.lower(obj.Name), string.lower(name))
+            end
+            
+            if match then
                 local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
                 if targetPart and targetPart.Parent ~= LocalPlayer.Character then
                     local parent = targetPart.Parent
@@ -784,7 +834,7 @@ function MultiGrinder:findClosestTarget(position, names)
     return closestTargetPart, closestTargetKey
 end
 
--- NEW: Find closest target within a radius (for events)
+-- MODIFIED: Supports exact match toggle
 function MultiGrinder:findClosestTargetInArea(position, radius, names)
     local closestTargetPart = nil 
     local closestTargetKey = nil 
@@ -792,7 +842,14 @@ function MultiGrinder:findClosestTargetInArea(position, radius, names)
     
     for _, obj in ipairs(Workspace:GetDescendants()) do
         for _, name in ipairs(names) do
-            if string.find(string.lower(obj.Name), string.lower(name)) then
+            local match = false
+            if self.ExactMatchEnabled then
+                match = string.lower(obj.Name) == string.lower(name)
+            else
+                match = string.find(string.lower(obj.Name), string.lower(name))
+            end
+            
+            if match then
                 local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
                 if targetPart and targetPart.Parent ~= LocalPlayer.Character then
                     local parent = targetPart.Parent
@@ -847,6 +904,7 @@ function MultiGrinder:findClosestMobInArea(position, radius)
     return closestTargetPart, closestTargetKey
 end
 
+-- MODIFIED: Supports exact match toggle
 function MultiGrinder:findClosestResourceInArea(position, radius, names)
     local closestTargetPart = nil
     local closestTargetKey = nil
@@ -854,7 +912,14 @@ function MultiGrinder:findClosestResourceInArea(position, radius, names)
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
         for _, name in ipairs(names) do
-            if string.lower(obj.Name) == string.lower(name) then 
+            local match = false
+            if self.ExactMatchEnabled then
+                match = string.lower(obj.Name) == string.lower(name)
+            else
+                match = string.find(string.lower(obj.Name), string.lower(name))
+            end
+            
+            if match then 
                 local targetPart = obj:IsA("BasePart") and obj or obj:FindFirstChild("HumanoidRootPart")
                 if targetPart and targetPart.Parent ~= LocalPlayer.Character then
                     local parentModel = targetPart.Parent
@@ -1024,6 +1089,24 @@ function MultiGrinder:executePriorityAreaCombat(hrp)
         end
     end
 
+    -- Auto-ignore stuck mobs in priority areas
+    if self.AutoIgnoreEnabled and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 10) then
+        local humanoid = target.Parent:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Health > 0 and humanoid.Health == humanoid.MaxHealth then
+            if self.CurrentTargetIdentifier then
+                self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+                print("[Multi-Bot] Auto-ignored stuck mob:", self.CurrentTargetIdentifier.Name)
+            end
+            self.PriorityAreaTarget = nil
+            self.CurrentTargetIdentifier = nil 
+            self.TargetAcquiredTime = nil
+            restoreCamera(self)
+            self:updateGUI()
+            return false 
+        end
+        self.TargetAcquiredTime = tick() - 5
+    end
+
     local targetPos = self:calculateTeleportPosition(target.Position, hrp.Position, "Combat")
     
     self.LastKnownPosition = hrp.Position 
@@ -1142,7 +1225,6 @@ function MultiGrinder:executeCombatAction(hrp)
     return true
 end
 
--- NEW: Event Action
 function MultiGrinder:executeEventAction(hrp)
     local toolName = self.CombatToolName
     local targetNames = self:getTargetNames("Event")
@@ -1230,7 +1312,8 @@ function MultiGrinder:executeEventAction(hrp)
 end
 
 function MultiGrinder:executePriorityAreaMining(hrp)
-    local toolName = self.MiningToolNames[self.CurrentMiningToolIndex] or self.MiningToolNames[1]
+    local toolName = self:getActiveMiningToolName()
+    if not toolName then return false end
     
     local currentAreaCFrame = self.MiningPriorityAreas[self.CurrentMiningPriorityAreaIndex]
     if not currentAreaCFrame then
@@ -1257,6 +1340,7 @@ function MultiGrinder:executePriorityAreaMining(hrp)
             self.CurrentTargetIdentifier = newTargetKey 
             target = self.MiningPriorityAreaTarget
             self.MiningPriorityAreaScanTimer = 0 
+            self.TargetAcquiredTime = tick()
             self:updateGUI()
         else
             self.MiningPriorityAreaScanTimer = self.MiningPriorityAreaScanTimer + CONFIG.FarmSpeed
@@ -1273,6 +1357,21 @@ function MultiGrinder:executePriorityAreaMining(hrp)
             restoreCamera(self)
             return false
         end
+    end
+    
+    -- Auto-ignore stuck ores in priority area
+    if self.AutoIgnoreEnabled and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 15) then
+        if self.CurrentTargetIdentifier then
+            self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+            print("[Multi-Bot] Auto-ignored stuck ore:", self.CurrentTargetIdentifier.Name)
+        end
+        self.MiningPriorityAreaTarget = nil
+        self.CurrentTargetIdentifier = nil 
+        self.TargetAcquiredTime = nil
+        self.LastMiningAngle = 0
+        restoreCamera(self)
+        self:updateGUI()
+        return false
     end
     
     if not target or not target.Parent then
@@ -1327,7 +1426,9 @@ function MultiGrinder:executeMiningAction(hrp)
         self.CurrentMiningPriorityAreaIndex = 1
     end
 
-    local toolName = self.MiningToolNames[self.CurrentMiningToolIndex] or self.MiningToolNames[1]
+    local toolName = self:getActiveMiningToolName()
+    if not toolName then return false end
+    
     local resource = self.CurrentTarget
 
     local needsNewTarget = not resource or not resource.Parent
@@ -1339,7 +1440,8 @@ function MultiGrinder:executeMiningAction(hrp)
         
         -- Reset tool index for new target
         self.CurrentMiningToolIndex = 1
-        toolName = self.MiningToolNames[1]
+        toolName = self:getActiveMiningToolName()
+        if not toolName then return false end
         
         local targetNames = self:getTargetNames("Mining")
         local newResource, newResourceKey = self:findClosestTarget(hrp.Position, targetNames)
@@ -1357,7 +1459,23 @@ function MultiGrinder:executeMiningAction(hrp)
         self.CurrentTargetIdentifier = newResourceKey 
         resource = self.CurrentTarget
         self.LastMiningAngle = 0
+        self.TargetAcquiredTime = tick()
         self:updateGUI() 
+    end
+    
+    -- Auto-ignore stuck ores
+    if self.AutoIgnoreEnabled and self.TargetAcquiredTime and (tick() - self.TargetAcquiredTime > 15) then
+        if self.CurrentTargetIdentifier then
+            self.IgnoredTargets[self.CurrentTargetIdentifier] = true 
+            print("[Multi-Bot] Auto-ignored stuck ore:", self.CurrentTargetIdentifier.Name)
+        end
+        self.CurrentTarget = nil 
+        self.CurrentTargetIdentifier = nil 
+        self.TargetAcquiredTime = nil
+        self.LastMiningAngle = 0
+        restoreCamera(self)
+        self:updateGUI()
+        return false 
     end
     
     if not resource or not resource.Parent then
@@ -1429,7 +1547,9 @@ function MultiGrinder:SaveSettings()
         CombatHeightOffset = self.CombatHeightOffset,
         MiningHeightOffset = self.MiningHeightOffset,
         MoneyFarmEnabled = self.MoneyFarmEnabled,
-        MoneyFarmTeleportLocation = self.MoneyFarmTeleportLocation and {self.MoneyFarmTeleportLocation:GetComponents()} or nil,
+        MoneyFarmRenderLocation = self.MoneyFarmRenderLocation and {self.MoneyFarmRenderLocation:GetComponents()} or nil,
+        MoneyFarmSpotLocation = self.MoneyFarmSpotLocation and {self.MoneyFarmSpotLocation:GetComponents()} or nil,
+        MoneyFarmStackCount = self.MoneyFarmStackCount,
         FlySpeed = self.FlySpeed,
         SellerItemName = self.SellerItemName,
         SellerAmount = self.SellerAmount,
@@ -1440,6 +1560,7 @@ function MultiGrinder:SaveSettings()
         EventPriorityAreaEnabled = self.EventPriorityAreaEnabled,
         EventPriorityAreaScanRadius = self.EventPriorityAreaScanRadius,
         EventPriorityAreaScanTime = self.EventPriorityAreaScanTime,
+        ExactMatchEnabled = self.ExactMatchEnabled,
         PriorityAreas = {},
         MiningPriorityAreas = {},
         EventPriorityAreas = {},
@@ -1516,9 +1637,13 @@ function MultiGrinder:LoadSettings()
     self.MiningHeightOffset = settings.MiningHeightOffset or CONFIG.MiningHeightOffset
     self.MoneyFarmEnabled = settings.MoneyFarmEnabled == true
     
-    if settings.MoneyFarmTeleportLocation then
-        self.MoneyFarmTeleportLocation = CFrame.new(unpack(settings.MoneyFarmTeleportLocation))
+    if settings.MoneyFarmRenderLocation then
+        self.MoneyFarmRenderLocation = CFrame.new(unpack(settings.MoneyFarmRenderLocation))
     end
+    if settings.MoneyFarmSpotLocation then
+        self.MoneyFarmSpotLocation = CFrame.new(unpack(settings.MoneyFarmSpotLocation))
+    end
+    self.MoneyFarmStackCount = settings.MoneyFarmStackCount or 1
     
     self.FlySpeed = settings.FlySpeed or CONFIG.FlySpeed
     self.SellerItemName = settings.SellerItemName or self.SellerItemName
@@ -1531,6 +1656,8 @@ function MultiGrinder:LoadSettings()
     self.EventPriorityAreaEnabled = settings.EventPriorityAreaEnabled == true
     self.EventPriorityAreaScanRadius = settings.EventPriorityAreaScanRadius or 50
     self.EventPriorityAreaScanTime = settings.EventPriorityAreaScanTime or 3
+    
+    self.ExactMatchEnabled = settings.ExactMatchEnabled == true
     
     if settings.NoclipEnabled then
         task.delay(1, function()
@@ -1613,7 +1740,9 @@ function MultiGrinder:ResetSettings()
         self:StopMoneyFarm()
     end
     self.MoneyFarmEnabled = false
-    self.MoneyFarmTeleportLocation = nil
+    self.MoneyFarmRenderLocation = nil
+    self.MoneyFarmSpotLocation = nil
+    self.MoneyFarmStackCount = 1
     
     if self.SellerEnabled then
         self:StopSelling()
@@ -1626,7 +1755,6 @@ function MultiGrinder:ResetSettings()
     
     self.FlySpeed = CONFIG.FlySpeed
     
-    -- NEW: Reset Event settings
     self.EventMode = false
     self.EventStartKeyword = ""
     self.EventEndKeyword = ""
@@ -1640,7 +1768,8 @@ function MultiGrinder:ResetSettings()
     self.EventPriorityAreaScanTime = CONFIG.Event.PriorityAreaScanTime
     self.PreEventState = {}
     
-    -- Disable movement
+    self.ExactMatchEnabled = false
+    
     if self.NoclipEnabled then
         self:ToggleNoclip(false)
     end
@@ -1685,23 +1814,23 @@ function MultiGrinder:ResetSettings()
         self.MainGui.GeneralPage.CombatHeightInput.Text = tostring(self.CombatHeightOffset)
         self.MainGui.GeneralPage.MiningHeightInput.Text = tostring(self.MiningHeightOffset)
         
-        self.MainGui.GeneralPage.MoneyFarmButton.Text = "Money Farm: OFF"
-        self.MainGui.GeneralPage.MoneyFarmButton.BackgroundColor3 = CONFIG.ToggleOffColor
-        
-        self.MainGui.GeneralPage.MoneyFarmSetTPButton.Text = "Set Money Farm TP"
-        self.MainGui.GeneralPage.MoneyFarmClearTPButton.Text = "Clear Money Farm TP"
-        self.MainGui.GeneralPage.MoneyFarmTPLabel.Text = "TP Location: Not Set"
-        
         self.MainGui.GeneralPage.FlySpeedInput.Text = tostring(self.FlySpeed)
         
-        self.MainGui.SellerPage.ItemNameInput.Text = self.SellerItemName
-        self.MainGui.SellerPage.AmountInput.Text = tostring(self.SellerAmount)
-        self.MainGui.SellerPage.CooldownInput.Text = tostring(self.SellerCooldown)
-        self.MainGui.SellerPage.TotalLabel.Text = "Total Sold: 0"
-        self.MainGui.SellerPage.ToggleButton.Text = "AUTO SELL: OFF"
-        self.MainGui.SellerPage.ToggleButton.BackgroundColor3 = CONFIG.ToggleOffColor
+        self.MainGui.OthersPage.ItemNameInput.Text = self.SellerItemName
+        self.MainGui.OthersPage.AmountInput.Text = tostring(self.SellerAmount)
+        self.MainGui.OthersPage.CooldownInput.Text = tostring(self.SellerCooldown)
+        self.MainGui.OthersPage.TotalLabel.Text = "Total Sold: 0"
+        self.MainGui.OthersPage.ToggleButton.Text = "AUTO SELL: OFF"
+        self.MainGui.OthersPage.ToggleButton.BackgroundColor3 = CONFIG.ToggleOffColor
         
-        -- NEW: Reset Event GUI
+        self.MainGui.OthersPage.MoneyFarmButton.Text = "Money Farm: OFF"
+        self.MainGui.OthersPage.MoneyFarmButton.BackgroundColor3 = CONFIG.ToggleOffColor
+        self.MainGui.OthersPage.MoneyFarmRenderLabel.Text = "Render TP: Not Set"
+        self.MainGui.OthersPage.MoneyFarmRenderLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+        self.MainGui.OthersPage.MoneyFarmSpotLabel.Text = "Spot TP: Not Set"
+        self.MainGui.OthersPage.MoneyFarmSpotLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+        self.MainGui.OthersPage.MoneyFarmStackInput.Text = "1"
+        
         self.MainGui.EventsPage.StartKeywordInput.Text = self.EventStartKeyword
         self.MainGui.EventsPage.EndKeywordInput.Text = self.EventEndKeyword
         self.MainGui.EventsPage.TargetNamesInput.Text = self.EventTargetNames
@@ -1712,6 +1841,9 @@ function MultiGrinder:ResetSettings()
         self.MainGui.EventsPage.PriorityScanTimeInput.Text = tostring(self.EventPriorityAreaScanTime)
         self.MainGui.EventsPage.StatusLabel.Text = "Event Mode: INACTIVE"
         self.MainGui.EventsPage.StatusLabel.TextColor3 = CONFIG.ToggleOffColor
+        
+        self.MainGui.GeneralPage.ExactMatchButton.Text = "Exact Match: OFF"
+        self.MainGui.GeneralPage.ExactMatchButton.BackgroundColor3 = CONFIG.ToggleOffColor
         
         self:updateGUI()
     end
@@ -1744,7 +1876,7 @@ function MultiGrinder:updateGUI()
     local generalPage = self.MainGui.GeneralPage
     local combatPage = self.MainGui.CombatPage
     local miningPage = self.MainGui.MiningPage
-    local sellerPage = self.MainGui.SellerPage
+    local othersPage = self.MainGui.OthersPage
     local eventsPage = self.MainGui.EventsPage
     
     if self.Enabled then
@@ -1769,6 +1901,9 @@ function MultiGrinder:updateGUI()
 
     generalPage.AutoIgnoreButton.Text = self.AutoIgnoreEnabled and "Auto-Ignore: ON" or "Auto-Ignore: OFF"
     generalPage.AutoIgnoreButton.BackgroundColor3 = self.AutoIgnoreEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    
+    generalPage.ExactMatchButton.Text = self.ExactMatchEnabled and "Exact Match: ON" or "Exact Match: OFF"
+    generalPage.ExactMatchButton.BackgroundColor3 = self.ExactMatchEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
 
     generalPage.TeleportOnRespawnButton.Text = self.TeleportOnRespawnEnabled and "TP on Respawn: ON" or "TP on Respawn: OFF"
     generalPage.TeleportOnRespawnButton.BackgroundColor3 = self.TeleportOnRespawnEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
@@ -1785,7 +1920,7 @@ function MultiGrinder:updateGUI()
     generalPage.MiningHitboxToggle.Text = self.MiningHitboxMode and "Mining Hitbox+: ON" or "Mining Hitbox+: OFF"
     generalPage.MiningHitboxToggle.BackgroundColor3 = self.MiningHitboxMode and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
 
-    local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self.MiningToolNames[1]
+    local currentToolName = (self.Mode == "Combat") and self.CombatToolName or self:getActiveMiningToolName() or "No Tool"
     local modeDisplayName = (self.Mode == "Combat") and "MODE: COMBAT" or "MODE: MINING"
     generalPage.ModeButton.Text = modeDisplayName .. " ("..currentToolName..")"
     
@@ -1800,15 +1935,21 @@ function MultiGrinder:updateGUI()
     generalPage.HeightOffsetToggle.Text = self.HeightOffsetEnabled and "Height Offset: ON" or "Height Offset: OFF"
     generalPage.HeightOffsetToggle.BackgroundColor3 = self.HeightOffsetEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
     
-    generalPage.MoneyFarmButton.Text = self.MoneyFarmEnabled and "Money Farm: ON" or "Money Farm: OFF"
-    generalPage.MoneyFarmButton.BackgroundColor3 = self.MoneyFarmEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    -- Others Page (Seller + Money Farm)
+    othersPage.ToggleButton.Text = self.SellerEnabled and "AUTO SELL: ON" or "AUTO SELL: OFF"
+    othersPage.ToggleButton.BackgroundColor3 = self.SellerEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
+    othersPage.TotalLabel.Text = string.format("Total Sold: %d", self.TotalSold)
     
-    generalPage.MoneyFarmTPLabel.Text = self.MoneyFarmTeleportLocation and "TP Location: SET" or "TP Location: Not Set"
-    generalPage.MoneyFarmTPLabel.TextColor3 = self.MoneyFarmTeleportLocation and CONFIG.ToggleOnColor or Color3.fromRGB(180, 180, 200)
+    othersPage.MoneyFarmButton.Text = self.MoneyFarmEnabled and "Money Farm: ON" or "Money Farm: OFF"
+    othersPage.MoneyFarmButton.BackgroundColor3 = self.MoneyFarmEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
     
-    sellerPage.ToggleButton.Text = self.SellerEnabled and "AUTO SELL: ON" or "AUTO SELL: OFF"
-    sellerPage.ToggleButton.BackgroundColor3 = self.SellerEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
-    sellerPage.TotalLabel.Text = string.format("Total Sold: %d", self.TotalSold)
+    othersPage.MoneyFarmRenderLabel.Text = self.MoneyFarmRenderLocation and "Render TP: SET" or "Render TP: Not Set"
+    othersPage.MoneyFarmRenderLabel.TextColor3 = self.MoneyFarmRenderLocation and CONFIG.ToggleOnColor or Color3.fromRGB(180, 180, 200)
+    
+    othersPage.MoneyFarmSpotLabel.Text = self.MoneyFarmSpotLocation and "Spot TP: SET" or "Spot TP: Not Set"
+    othersPage.MoneyFarmSpotLabel.TextColor3 = self.MoneyFarmSpotLocation and CONFIG.ToggleOnColor or Color3.fromRGB(180, 180, 200)
+    
+    othersPage.MoneyFarmStackInput.Text = tostring(self.MoneyFarmStackCount)
     
     combatPage.PriorityAreaToggleButton.Text = self.PriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
     combatPage.PriorityAreaToggleButton.BackgroundColor3 = self.PriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
@@ -1818,7 +1959,6 @@ function MultiGrinder:updateGUI()
     miningPage.MiningPriorityAreaToggleButton.BackgroundColor3 = self.MiningPriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
     miningPage.MiningPriorityAreaCountLabel.Text = string.format("Areas: %d", #self.MiningPriorityAreas)
 
-    -- NEW: Event page updates
     eventsPage.PriorityAreaToggleButton.Text = self.EventPriorityAreaEnabled and "Priority Areas: ON" or "Priority Areas: OFF"
     eventsPage.PriorityAreaToggleButton.BackgroundColor3 = self.EventPriorityAreaEnabled and CONFIG.ToggleOnColor or CONFIG.ToggleOffColor
     eventsPage.PriorityAreaCountLabel.Text = string.format("Areas: %d", #self.EventPriorityAreas)
@@ -2083,7 +2223,7 @@ function MultiGrinder:setupGUI()
     TabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
     TabLayout.Parent = TabBar
 
-    local TabNames = {"General", "Combat", "Mining", "Seller", "Events"}
+    local TabNames = {"General", "Combat", "Mining", "Others", "Events"}
     local Tabs = {}
     
     for _, tabName in ipairs(TabNames) do
@@ -2198,6 +2338,13 @@ function MultiGrinder:setupGUI()
         self.AutoIgnoreEnabled = not self.AutoIgnoreEnabled
         self:updateGUI()
     end)
+    
+    -- NEW: Exact Match Toggle
+    local ExactMatchButton = createButton(GeneralPage, "Exact Match: OFF", CONFIG.ToggleOffColor)
+    ExactMatchButton.MouseButton1Click:Connect(function()
+        self.ExactMatchEnabled = not self.ExactMatchEnabled
+        self:updateGUI()
+    end)
 
     createSectionHeader(GeneralPage, "UTILITY")
     
@@ -2225,43 +2372,6 @@ function MultiGrinder:setupGUI()
         
         self:updateGUI()
     end)
-
-    local MoneyFarmButton = createButton(GeneralPage, "Money Farm: OFF", CONFIG.ToggleOffColor)
-    MoneyFarmButton.MouseButton1Click:Connect(function()
-        self.MoneyFarmEnabled = not self.MoneyFarmEnabled
-        if self.MoneyFarmEnabled then
-            self:StartMoneyFarm()
-        else
-            self:StopMoneyFarm()
-        end
-        self:updateGUI()
-    end)
-    
-    local MoneyFarmSetTPButton = createButton(GeneralPage, "Set Money Farm TP", CONFIG.AccentColor)
-    MoneyFarmSetTPButton.MouseButton1Click:Connect(function()
-        local hrp = self:getHumanoidRootPart()
-        if hrp then
-            self.MoneyFarmTeleportLocation = hrp.CFrame
-            self:updateGUI()
-        end
-    end)
-    
-    local MoneyFarmClearTPButton = createButton(GeneralPage, "Clear Money Farm TP", Color3.fromRGB(200, 140, 0))
-    MoneyFarmClearTPButton.MouseButton1Click:Connect(function()
-        self.MoneyFarmTeleportLocation = nil
-        self:updateGUI()
-    end)
-    
-    local MoneyFarmTPLabel = Instance.new("TextLabel")
-    MoneyFarmTPLabel.Name = "MoneyFarmTPLabel"
-    MoneyFarmTPLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    MoneyFarmTPLabel.Text = "TP Location: Not Set"
-    MoneyFarmTPLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
-    MoneyFarmTPLabel.Font = Enum.Font.GothamBold
-    MoneyFarmTPLabel.TextSize = 13
-    MoneyFarmTPLabel.BackgroundTransparency = 1
-    MoneyFarmTPLabel.TextXAlignment = Enum.TextXAlignment.Center
-    MoneyFarmTPLabel.Parent = GeneralPage
 
     createSectionHeader(GeneralPage, "MOVEMENT")
     
@@ -2575,14 +2685,14 @@ function MultiGrinder:setupGUI()
 
     Pages["Mining"] = MiningPage
 
-    -- SELLER PAGE
-    local SellerPage = createContentPage(ContentContainer, "Seller")
-    local SellerLayout = createListLayout(SellerPage)
-    SellerLayout.Padding = UDim.new(0, 10)
+    -- OTHERS PAGE (Seller + Money Farm)
+    local OthersPage = createContentPage(ContentContainer, "Others")
+    local OthersLayout = createListLayout(OthersPage)
+    OthersLayout.Padding = UDim.new(0, 10)
     
-    createSectionHeader(SellerPage, "SELLER CONTROLS")
+    createSectionHeader(OthersPage, "SELLER CONTROLS")
     
-    local SellerToggleButton = createButton(SellerPage, "AUTO SELL: OFF", CONFIG.ToggleOffColor, 36)
+    local SellerToggleButton = createButton(OthersPage, "AUTO SELL: OFF", CONFIG.ToggleOffColor, 36)
     SellerToggleButton.MouseButton1Click:Connect(function()
         self.SellerEnabled = not self.SellerEnabled
         if self.SellerEnabled then
@@ -2593,17 +2703,17 @@ function MultiGrinder:setupGUI()
         self:updateGUI()
     end)
     
-    createSectionHeader(SellerPage, "ITEM SETTINGS")
+    createSectionHeader(OthersPage, "ITEM SETTINGS")
     
-    createInputLabel(SellerPage, "Item Name:")
-    local SellerItemNameInput = createTextBox(SellerPage, self.SellerItemName, "E.g., Crystal, Iron Ore")
+    createInputLabel(OthersPage, "Item Name:")
+    local SellerItemNameInput = createTextBox(OthersPage, self.SellerItemName, "E.g., Crystal, Iron Ore")
     SellerItemNameInput.FocusLost:Connect(function()
         self.SellerItemName = SellerItemNameInput.Text
         self:SaveSettings()
     end)
     
-    createInputLabel(SellerPage, "Amount to Sell:")
-    local SellerAmountInput = createTextBox(SellerPage, tostring(self.SellerAmount), "E.g., 1, 5, 99")
+    createInputLabel(OthersPage, "Amount to Sell:")
+    local SellerAmountInput = createTextBox(OthersPage, tostring(self.SellerAmount), "E.g., 1, 5, 99")
     SellerAmountInput.FocusLost:Connect(function()
         local amt = tonumber(SellerAmountInput.Text)
         if amt and amt > 0 then
@@ -2615,10 +2725,10 @@ function MultiGrinder:setupGUI()
         end
     end)
     
-    createSectionHeader(SellerPage, "SPEED SETTINGS")
+    createSectionHeader(OthersPage, "SPEED SETTINGS")
     
-    createInputLabel(SellerPage, "Cooldown (seconds):")
-    local SellerCooldownInput = createTextBox(SellerPage, tostring(self.SellerCooldown), "E.g., 0.05, 0.1, 0.5")
+    createInputLabel(OthersPage, "Cooldown (seconds):")
+    local SellerCooldownInput = createTextBox(OthersPage, tostring(self.SellerCooldown), "E.g., 0.05, 0.1, 0.5")
     SellerCooldownInput.FocusLost:Connect(function()
         local cd = tonumber(SellerCooldownInput.Text)
         if cd and cd >= 0 then
@@ -2629,7 +2739,7 @@ function MultiGrinder:setupGUI()
         end
     end)
     
-    createSectionHeader(SellerPage, "STATS")
+    createSectionHeader(OthersPage, "STATS")
     
     local SellerTotalLabel = Instance.new("TextLabel")
     SellerTotalLabel.Name = "TotalLabel"
@@ -2640,23 +2750,107 @@ function MultiGrinder:setupGUI()
     SellerTotalLabel.TextSize = 14
     SellerTotalLabel.BackgroundTransparency = 1
     SellerTotalLabel.TextXAlignment = Enum.TextXAlignment.Center
-    SellerTotalLabel.Parent = SellerPage
+    SellerTotalLabel.Parent = OthersPage
     
-    createSectionHeader(SellerPage, "CONFIG")
+    createSectionHeader(OthersPage, "MONEY FARM")
     
-    local SellerSaveButton = createButton(SellerPage, "Save Settings", CONFIG.AccentColor)
+    local MoneyFarmButton = createButton(OthersPage, "Money Farm: OFF", CONFIG.ToggleOffColor)
+    MoneyFarmButton.MouseButton1Click:Connect(function()
+        self.MoneyFarmEnabled = not self.MoneyFarmEnabled
+        if self.MoneyFarmEnabled then
+            self:StartMoneyFarm()
+        else
+            self:StopMoneyFarm()
+        end
+        self:updateGUI()
+    end)
+    
+    local MoneyFarmSetRenderButton = createButton(OthersPage, "Set Render TP", CONFIG.AccentColor)
+    MoneyFarmSetRenderButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            self.MoneyFarmRenderLocation = hrp.CFrame
+            self:updateGUI()
+        end
+    end)
+    
+    local MoneyFarmClearRenderButton = createButton(OthersPage, "Clear Render TP", Color3.fromRGB(200, 140, 0))
+    MoneyFarmClearRenderButton.MouseButton1Click:Connect(function()
+        self.MoneyFarmRenderLocation = nil
+        self:updateGUI()
+    end)
+    
+    local MoneyFarmRenderLabel = Instance.new("TextLabel")
+    MoneyFarmRenderLabel.Name = "MoneyFarmRenderLabel"
+    MoneyFarmRenderLabel.Size = UDim2.new(0.9, 0, 0, 20)
+    MoneyFarmRenderLabel.Text = "Render TP: Not Set"
+    MoneyFarmRenderLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+    MoneyFarmRenderLabel.Font = Enum.Font.GothamBold
+    MoneyFarmRenderLabel.TextSize = 13
+    MoneyFarmRenderLabel.BackgroundTransparency = 1
+    MoneyFarmRenderLabel.TextXAlignment = Enum.TextXAlignment.Center
+    MoneyFarmRenderLabel.Parent = OthersPage
+    
+    local MoneyFarmSetSpotButton = createButton(OthersPage, "Set Spot TP", CONFIG.AccentColor)
+    MoneyFarmSetSpotButton.MouseButton1Click:Connect(function()
+        local hrp = self:getHumanoidRootPart()
+        if hrp then
+            self.MoneyFarmSpotLocation = hrp.CFrame
+            self:updateGUI()
+        end
+    end)
+    
+    local MoneyFarmClearSpotButton = createButton(OthersPage, "Clear Spot TP", Color3.fromRGB(200, 140, 0))
+    MoneyFarmClearSpotButton.MouseButton1Click:Connect(function()
+        self.MoneyFarmSpotLocation = nil
+        self:updateGUI()
+    end)
+    
+    local MoneyFarmSpotLabel = Instance.new("TextLabel")
+    MoneyFarmSpotLabel.Name = "MoneyFarmSpotLabel"
+    MoneyFarmSpotLabel.Size = UDim2.new(0.9, 0, 0, 20)
+    MoneyFarmSpotLabel.Text = "Spot TP: Not Set"
+    MoneyFarmSpotLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+    MoneyFarmSpotLabel.Font = Enum.Font.GothamBold
+    MoneyFarmSpotLabel.TextSize = 13
+    MoneyFarmSpotLabel.BackgroundTransparency = 1
+    MoneyFarmSpotLabel.TextXAlignment = Enum.TextXAlignment.Center
+    MoneyFarmSpotLabel.Parent = OthersPage
+    
+    createSectionHeader(OthersPage, "STACK COUNT")
+    
+    createInputLabel(OthersPage, "How many loops to stack:")
+    local MoneyFarmStackInput = createTextBox(OthersPage, tostring(self.MoneyFarmStackCount), "E.g., 1, 2, 3")
+    MoneyFarmStackInput.FocusLost:Connect(function()
+        local val = tonumber(MoneyFarmStackInput.Text)
+        if val and val >= 1 then
+            self.MoneyFarmStackCount = math.floor(val)
+            self:SaveSettings()
+            -- Restart if running to apply new count
+            if self.MoneyFarmEnabled then
+                self:StopMoneyFarm()
+                self:StartMoneyFarm()
+            end
+        else
+            MoneyFarmStackInput.Text = tostring(self.MoneyFarmStackCount)
+        end
+    end)
+    
+    createSectionHeader(OthersPage, "CONFIG")
+    
+    local SellerSaveButton = createButton(OthersPage, "Save Settings", CONFIG.AccentColor)
     SellerSaveButton.MouseButton1Click:Connect(function()
         self:SaveSettings()
     end)
     
-    local SellerResetButton = createButton(SellerPage, "Reset Settings", Color3.fromRGB(200, 140, 0))
+    local SellerResetButton = createButton(OthersPage, "Reset Settings", Color3.fromRGB(200, 140, 0))
     SellerResetButton.MouseButton1Click:Connect(function()
         self:ResetSettings()
     end)
     
-    Pages["Seller"] = SellerPage
+    Pages["Others"] = OthersPage
 
-    -- EVENTS PAGE (NEW)
+    -- EVENTS PAGE
     local EventsPage = createContentPage(ContentContainer, "Events")
     local EventsLayout = createListLayout(EventsPage)
     EventsLayout.Padding = UDim.new(0, 10)
@@ -2778,13 +2972,10 @@ function MultiGrinder:setupGUI()
             IgnoreButton = IgnoreButton,
             ClearIgnoreButton = ClearIgnoreButton,
             AutoIgnoreButton = AutoIgnoreButton,
+            ExactMatchButton = ExactMatchButton,
             TeleportOnRespawnButton = TeleportOnRespawnButton,
             AutoBlockButton = AutoBlockButton,
             SpecialAttackButton = SpecialAttackButton,
-            MoneyFarmButton = MoneyFarmButton,
-            MoneyFarmSetTPButton = MoneyFarmSetTPButton,
-            MoneyFarmClearTPButton = MoneyFarmClearTPButton,
-            MoneyFarmTPLabel = MoneyFarmTPLabel,
             SafeDistanceToggle = SafeDistanceToggle,
             NoclipButton = NoclipButton,
             FlyButton = FlyButton,
@@ -2821,12 +3012,20 @@ function MultiGrinder:setupGUI()
             MiningPriorityRadiusInput = MPriorityRadiusInput,
             MiningPriorityScanTimeInput = MPriorityScanTimeInput,
         },
-        SellerPage = {
+        OthersPage = {
             ToggleButton = SellerToggleButton,
             ItemNameInput = SellerItemNameInput,
             AmountInput = SellerAmountInput,
             CooldownInput = SellerCooldownInput,
             TotalLabel = SellerTotalLabel,
+            MoneyFarmButton = MoneyFarmButton,
+            MoneyFarmSetRenderButton = MoneyFarmSetRenderButton,
+            MoneyFarmClearRenderButton = MoneyFarmClearRenderButton,
+            MoneyFarmRenderLabel = MoneyFarmRenderLabel,
+            MoneyFarmSetSpotButton = MoneyFarmSetSpotButton,
+            MoneyFarmClearSpotButton = MoneyFarmClearSpotButton,
+            MoneyFarmSpotLabel = MoneyFarmSpotLabel,
+            MoneyFarmStackInput = MoneyFarmStackInput,
         },
         EventsPage = {
             StartKeywordInput = EventStartInput,
