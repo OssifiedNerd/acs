@@ -18,13 +18,28 @@ local Settings = {
     returnDelay = 5,
     noclipEnabled = false,
     frozen = false,
-    teleportCFrameBase = nil,
+    hoverEnabled = false,
+    guiPosition = nil,
+    minimized = false,
+    -- TP Locations
     teleportCFrameDesert = nil,
-    guiPosition = nil -- Will store UDim2 as table
+    teleportCFrameTundra = nil,
+    teleportCFrameForest1 = nil,
+    teleportCFrameForest2 = nil,
+    teleportCFrameForest3 = nil,
+    teleportCFrameForest4 = nil,
+    teleportCFrameFarm = nil,
+    teleportCFrameSpider = nil,
+    -- Render helpers
+    renderDesert = nil,
+    renderTundra = nil,
+    renderForest = nil,
+    renderFarm = nil,
+    renderSpider = nil,
 }
 
-local SETTINGS_FILE = "SpiderToolSettings.json"
-local SAVE_COOLDOWN = 2 -- seconds between saves
+local SETTINGS_FILE = "SpiderToolSettings_v3.json"
+local SAVE_COOLDOWN = 2
 local lastSaveTime = 0
 
 --// Settings Manager
@@ -63,12 +78,11 @@ function SettingsManager.Load()
         if not isfile(SETTINGS_FILE) then return nil end
         return HttpService:JSONDecode(readfile(SETTINGS_FILE))
     end)
-    
+
     if success and result then
-        -- Validate and merge
         for key, default in pairs(Settings) do
             if result[key] ~= nil then
-                if key == "teleportCFrameBase" or key == "teleportCFrameDesert" then
+                if key:find("CFrame") or key:find("render") then
                     Settings[key] = SettingsManager.DeserializeCFrame(result[key])
                 elseif key == "guiPosition" then
                     Settings[key] = SettingsManager.DeserializeUDim2(result[key])
@@ -86,10 +100,10 @@ function SettingsManager.Save()
     local now = tick()
     if now - lastSaveTime < SAVE_COOLDOWN then return end
     lastSaveTime = now
-    
+
     local dataToSave = {}
     for key, value in pairs(Settings) do
-        if key == "teleportCFrameBase" or key == "teleportCFrameDesert" then
+        if key:find("CFrame") or key:find("render") then
             dataToSave[key] = SettingsManager.SerializeCFrame(value)
         elseif key == "guiPosition" then
             dataToSave[key] = SettingsManager.SerializeUDim2(value)
@@ -97,45 +111,60 @@ function SettingsManager.Save()
             dataToSave[key] = value
         end
     end
-    
+
     pcall(function()
         writefile(SETTINGS_FILE, HttpService:JSONEncode(dataToSave))
     end)
 end
 
--- Debounced auto-save
 local autoSaveConnection
 function SettingsManager.AutoSave()
     if autoSaveConnection then autoSaveConnection:Disconnect() end
     autoSaveConnection = task.delay(SAVE_COOLDOWN, SettingsManager.Save)
 end
 
--- Load settings on startup
 SettingsManager.Load()
 
---// Variables (synced with Settings)
+--// Variables
 local wandEnabled = Settings.wandEnabled
 local attackSpeed = Settings.attackSpeed
 local attackRange = Settings.attackRange
 local walkSpeed = Settings.walkSpeed
 local multiAttacks = Settings.multiAttacks
 local lastAutoAttack = 0
-
 local autoTeleportEnabled = Settings.autoTeleportEnabled
 local nearbyRadius = Settings.nearbyRadius
 local returnDelay = Settings.returnDelay
 local isTeleporting = false
-local teleportCFrameBase = Settings.teleportCFrameBase
-local teleportCFrameDesert = Settings.teleportCFrameDesert
-local crystalCount = 0
 local frozen = Settings.frozen
 local noclipEnabled = Settings.noclipEnabled
+local hoverEnabled = Settings.hoverEnabled
+local minimized = Settings.minimized
+
+-- TP Locations
+local teleportCFrameDesert = Settings.teleportCFrameDesert
+local teleportCFrameTundra = Settings.teleportCFrameTundra
+local teleportCFrameForest1 = Settings.teleportCFrameForest1
+local teleportCFrameForest2 = Settings.teleportCFrameForest2
+local teleportCFrameForest3 = Settings.teleportCFrameForest3
+local teleportCFrameForest4 = Settings.teleportCFrameForest4
+local teleportCFrameFarm = Settings.teleportCFrameFarm
+local teleportCFrameSpider = Settings.teleportCFrameSpider
+
+-- Render helpers
+local renderDesert = Settings.renderDesert
+local renderTundra = Settings.renderTundra
+local renderForest = Settings.renderForest
+local renderFarm = Settings.renderFarm
+local renderSpider = Settings.renderSpider
 
 -- Spider vars
 local spiderState = "🟣"
 local spiderDisappeared = false
+local originalCF = nil
+local currentFarmMode = false
 
--- Target mobs (priority)
+-- Target mobs (priority) - Normal mode
 local targetMobs = {
     ["royalSpiderModel"] = 1,
     ["sandManModel"] = 2,
@@ -146,6 +175,16 @@ local targetMobs = {
     ["desertBossModel"] = 7
 }
 
+-- Farm mode targets (no priority)
+local farmMobs = {
+    ["pigModel"] = true,
+    ["oxModel"] = true,
+    ["farmerModel"] = true,
+    ["slimeModel"] = true,
+    ["cow1Model"] = true,
+    ["cow2Model"] = true
+}
+
 -- Colors for status label
 local mobColors = {
     ["royalSpiderModel"] = Color3.fromRGB(255, 0, 0),
@@ -153,7 +192,13 @@ local mobColors = {
     ["crystalGuardianModel"] = Color3.fromRGB(0, 255, 0),
     ["crystalArcherModel"] = Color3.fromRGB(0, 200, 200),
     ["Sheds"] = Color3.fromRGB(200, 200, 100),
-    ["spiderDen8183Sheds"] = Color3.fromRGB(150, 50, 255)
+    ["spiderDen8183Sheds"] = Color3.fromRGB(150, 50, 255),
+    ["pigModel"] = Color3.fromRGB(255, 192, 203),
+    ["oxModel"] = Color3.fromRGB(139, 69, 19),
+    ["farmerModel"] = Color3.fromRGB(255, 255, 0),
+    ["slimeModel"] = Color3.fromRGB(0, 255, 127),
+    ["cow1Model"] = Color3.fromRGB(255, 255, 255),
+    ["cow2Model"] = Color3.fromRGB(0, 0, 0),
 }
 
 local ignoreList = {"SwordTroop", "ArcherTroop", "WizardTroop", "Mystical Bag"}
@@ -165,29 +210,68 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 240, 0, 0) -- Slightly wider for new buttons
-MainFrame.Position = Settings.guiPosition or UDim2.new(0.5, -120, 0.5, -180)
+MainFrame.Size = UDim2.new(0, 260, 0, 0)
+MainFrame.Position = Settings.guiPosition or UDim2.new(0.5, -130, 0.5, -200)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 MainFrame.BorderSizePixel = 0
 MainFrame.Parent = ScreenGui
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 MainFrame.AutomaticSize = Enum.AutomaticSize.Y
 
-local UIListLayout = Instance.new("UIListLayout", MainFrame)
+-- Title bar with minimize and X
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 28)
+TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = MainFrame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, -60, 1, 0)
+TitleLabel.Position = UDim2.new(0, 10, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "🕷️ Spider Tool v3"
+TitleLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 14
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = TitleBar
+
+local MinimizeButton = Instance.new("TextButton")
+MinimizeButton.Size = UDim2.new(0, 24, 0, 24)
+MinimizeButton.Position = UDim2.new(1, -52, 0, 2)
+MinimizeButton.Text = minimized and "□" or "─"
+MinimizeButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+MinimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+MinimizeButton.Font = Enum.Font.GothamBold
+MinimizeButton.TextSize = 14
+MinimizeButton.Parent = TitleBar
+Instance.new("UICorner", MinimizeButton).CornerRadius = UDim.new(0, 6)
+
+local CloseButton = Instance.new("TextButton")
+CloseButton.Size = UDim2.new(0, 24, 0, 24)
+CloseButton.Position = UDim2.new(1, -26, 0, 2)
+CloseButton.Text = "✕"
+CloseButton.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.TextSize = 12
+CloseButton.Parent = TitleBar
+Instance.new("UICorner", CloseButton).CornerRadius = UDim.new(0, 6)
+
+local ContentFrame = Instance.new("Frame")
+ContentFrame.Size = UDim2.new(1, 0, 0, 0)
+ContentFrame.Position = UDim2.new(0, 0, 0, 28)
+ContentFrame.BackgroundTransparency = 1
+ContentFrame.AutomaticSize = Enum.AutomaticSize.Y
+ContentFrame.Parent = MainFrame
+
+local UIListLayout = Instance.new("UIListLayout", ContentFrame)
 UIListLayout.Padding = UDim.new(0, 6)
 UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
-Instance.new("UIPadding", MainFrame).PaddingTop = UDim.new(0, 10)
-
--- Title Label
-local TitleLabel = Instance.new("TextLabel")
-TitleLabel.Size = UDim2.new(0.9, 0, 0, 22)
-TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🕷️ Spider Tool v2.0"
-TitleLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
-TitleLabel.Font = Enum.Font.GothamBold
-TitleLabel.TextSize = 16
-TitleLabel.Parent = MainFrame
+Instance.new("UIPadding", ContentFrame).PaddingTop = UDim.new(0, 8)
+Instance.new("UIPadding", ContentFrame).PaddingBottom = UDim.new(0, 10)
 
 -- Wand Toggle Button
 local ToggleButton = Instance.new("TextButton")
@@ -197,14 +281,25 @@ ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Col
 ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 ToggleButton.Font = Enum.Font.GothamBold
 ToggleButton.TextSize = 14
-ToggleButton.Parent = MainFrame
+ToggleButton.Parent = ContentFrame
 Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 6)
+
+-- Hover Button
+local HoverButton = Instance.new("TextButton")
+HoverButton.Size = UDim2.new(0.9, 0, 0, 25)
+HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
+HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
+HoverButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+HoverButton.Font = Enum.Font.GothamBold
+HoverButton.TextSize = 14
+HoverButton.Parent = ContentFrame
+Instance.new("UICorner", HoverButton).CornerRadius = UDim.new(0, 6)
 
 -- Input Row (Speed + Range + WalkSpeed)
 local InputRow = Instance.new("Frame")
 InputRow.Size = UDim2.new(0.9, 0, 0, 30)
 InputRow.BackgroundTransparency = 1
-InputRow.Parent = MainFrame
+InputRow.Parent = ContentFrame
 local InputLayout = Instance.new("UIListLayout", InputRow)
 InputLayout.FillDirection = Enum.FillDirection.Horizontal
 InputLayout.Padding = UDim.new(0, 5)
@@ -246,7 +341,7 @@ Instance.new("UICorner", WalkSpeedBox).CornerRadius = UDim.new(0, 6)
 local MultiRow = Instance.new("Frame")
 MultiRow.Size = UDim2.new(0.9, 0, 0, 30)
 MultiRow.BackgroundTransparency = 1
-MultiRow.Parent = MainFrame
+MultiRow.Parent = ContentFrame
 local MultiLayout = Instance.new("UIListLayout", MultiRow)
 MultiLayout.FillDirection = Enum.FillDirection.Horizontal
 MultiLayout.Padding = UDim.new(0, 5)
@@ -280,7 +375,7 @@ StatusLabel.Text = "Target: None"
 StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
 StatusLabel.Font = Enum.Font.Gotham
 StatusLabel.TextSize = 14
-StatusLabel.Parent = MainFrame
+StatusLabel.Parent = ContentFrame
 
 local SpiderStatusLabel = Instance.new("TextLabel")
 SpiderStatusLabel.Size = UDim2.new(0.9, 0, 0, 20)
@@ -289,10 +384,10 @@ SpiderStatusLabel.Text = "🕷️ 🟣"
 SpiderStatusLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
 SpiderStatusLabel.Font = Enum.Font.Gotham
 SpiderStatusLabel.TextSize = 16
-SpiderStatusLabel.Parent = MainFrame
+SpiderStatusLabel.Parent = ContentFrame
 
 -- Countdown Label
-local CountdownLabel = Instance.new("TextLabel", MainFrame)
+local CountdownLabel = Instance.new("TextLabel", ContentFrame)
 CountdownLabel.Size = UDim2.new(0, 120, 0, 20)
 CountdownLabel.BackgroundTransparency = 1
 CountdownLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -300,40 +395,95 @@ CountdownLabel.TextScaled = true
 CountdownLabel.Text = "Timer: 0s"
 CountdownLabel.Font = Enum.Font.GothamBold
 
--- Teleport Buttons (Base & Desert)
-local TPFrame = Instance.new("Frame")
-TPFrame.Size = UDim2.new(0.9, 0, 0, 30)
-TPFrame.BackgroundTransparency = 1
-TPFrame.Parent = MainFrame
-local TPLayout = Instance.new("UIListLayout", TPFrame)
-TPLayout.FillDirection = Enum.FillDirection.Horizontal
-TPLayout.Padding = UDim.new(0, 5)
+-- Helper function to create TP button with render button
+local function CreateTPButton(name, color, savedCF, renderCF)
+    local Row = Instance.new("Frame")
+    Row.Size = UDim2.new(0.9, 0, 0, 30)
+    Row.BackgroundTransparency = 1
+    Row.Parent = ContentFrame
+    local RowLayout = Instance.new("UIListLayout", Row)
+    RowLayout.FillDirection = Enum.FillDirection.Horizontal
+    RowLayout.Padding = UDim.new(0, 5)
 
-local BaseButton = Instance.new("TextButton")
-BaseButton.Size = UDim2.new(0.48, 0, 1, 0)
-BaseButton.Text = teleportCFrameBase and "Base ✓" or "Base"
-BaseButton.BackgroundColor3 = teleportCFrameBase and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(100, 100, 100)
-BaseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-BaseButton.Font = Enum.Font.Gotham
-BaseButton.TextSize = 14
-BaseButton.Parent = TPFrame
-Instance.new("UICorner", BaseButton).CornerRadius = UDim.new(0, 6)
+    local MainBtn = Instance.new("TextButton")
+    MainBtn.Size = UDim2.new(0.75, 0, 1, 0)
+    MainBtn.Text = savedCF and (name .. " ✓") or name
+    MainBtn.BackgroundColor3 = savedCF and Color3.fromRGB(0, 200, 0) or color
+    MainBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MainBtn.Font = Enum.Font.GothamBold
+    MainBtn.TextSize = 13
+    MainBtn.Parent = Row
+    Instance.new("UICorner", MainBtn).CornerRadius = UDim.new(0, 6)
 
-local DesertButton = Instance.new("TextButton")
-DesertButton.Size = UDim2.new(0.48, 0, 1, 0)
-DesertButton.Text = teleportCFrameDesert and "Desert ✓" or "Desert"
-DesertButton.BackgroundColor3 = teleportCFrameDesert and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(100, 100, 100)
-DesertButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-DesertButton.Font = Enum.Font.Gotham
-DesertButton.TextSize = 14
-DesertButton.Parent = TPFrame
-Instance.new("UICorner", DesertButton).CornerRadius = UDim.new(0, 6)
+    local RenderBtn = Instance.new("TextButton")
+    RenderBtn.Size = UDim2.new(0.25, 0, 1, 0)
+    RenderBtn.Text = "R"
+    RenderBtn.BackgroundColor3 = renderCF and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+    RenderBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    RenderBtn.Font = Enum.Font.GothamBold
+    RenderBtn.TextSize = 12
+    RenderBtn.Parent = Row
+    Instance.new("UICorner", RenderBtn).CornerRadius = UDim.new(0, 6)
+
+    return Row, MainBtn, RenderBtn
+end
+
+-- Desert TP
+local DesertRow, DesertBtn, DesertRenderBtn = CreateTPButton("Desert", Color3.fromRGB(194, 178, 128), teleportCFrameDesert, renderDesert)
+
+-- Tundra TP
+local TundraRow, TundraBtn, TundraRenderBtn = CreateTPButton("Tundra", Color3.fromRGB(176, 196, 222), teleportCFrameTundra, renderTundra)
+
+-- Forest TP Frame (1/4 label)
+local ForestRow = Instance.new("Frame")
+ForestRow.Size = UDim2.new(0.9, 0, 0, 30)
+ForestRow.BackgroundTransparency = 1
+ForestRow.Parent = ContentFrame
+local ForestLayout = Instance.new("UIListLayout", ForestRow)
+ForestLayout.FillDirection = Enum.FillDirection.Horizontal
+ForestLayout.Padding = UDim.new(0, 5)
+
+local ForestLabel = Instance.new("TextLabel")
+ForestLabel.Size = UDim2.new(0.5, -2, 1, 0)
+ForestLabel.BackgroundColor3 = Color3.fromRGB(34, 139, 34)
+ForestLabel.Text = "Forest 1/4"
+ForestLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+ForestLabel.Font = Enum.Font.GothamBold
+ForestLabel.TextSize = 13
+ForestLabel.Parent = ForestRow
+Instance.new("UICorner", ForestLabel).CornerRadius = UDim.new(0, 6)
+
+local ForestRenderBtn = Instance.new("TextButton")
+ForestRenderBtn.Size = UDim2.new(0.25, -2, 1, 0)
+ForestRenderBtn.Text = "R"
+ForestRenderBtn.BackgroundColor3 = renderForest and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+ForestRenderBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ForestRenderBtn.Font = Enum.Font.GothamBold
+ForestRenderBtn.TextSize = 12
+ForestRenderBtn.Parent = ForestRow
+Instance.new("UICorner", ForestRenderBtn).CornerRadius = UDim.new(0, 6)
+
+local ForestSetBtn = Instance.new("TextButton")
+ForestSetBtn.Size = UDim2.new(0.25, 0, 1, 0)
+ForestSetBtn.Text = "Set"
+ForestSetBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+ForestSetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ForestSetBtn.Font = Enum.Font.GothamBold
+ForestSetBtn.TextSize = 12
+ForestSetBtn.Parent = ForestRow
+Instance.new("UICorner", ForestSetBtn).CornerRadius = UDim.new(0, 6)
+
+-- Farm TP
+local FarmRow, FarmBtn, FarmRenderBtn = CreateTPButton("Farm", Color3.fromRGB(210, 180, 140), teleportCFrameFarm, renderFarm)
+
+-- Spider TP (original position)
+local SpiderRow, SpiderBtn, SpiderRenderBtn = CreateTPButton("Spider", Color3.fromRGB(170, 0, 255), teleportCFrameSpider, renderSpider)
 
 -- Settings Buttons Row
 local SettingsRow = Instance.new("Frame")
 SettingsRow.Size = UDim2.new(0.9, 0, 0, 30)
 SettingsRow.BackgroundTransparency = 1
-SettingsRow.Parent = MainFrame
+SettingsRow.Parent = ContentFrame
 local SettingsLayout = Instance.new("UIListLayout", SettingsRow)
 SettingsLayout.FillDirection = Enum.FillDirection.Horizontal
 SettingsLayout.Padding = UDim.new(0, 5)
@@ -366,7 +516,7 @@ FreezeButton.BackgroundColor3 = frozen and Color3.fromRGB(0, 100, 255) or Color3
 FreezeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 FreezeButton.Font = Enum.Font.GothamBold
 FreezeButton.TextSize = 14
-FreezeButton.Parent = MainFrame
+FreezeButton.Parent = ContentFrame
 Instance.new("UICorner", FreezeButton).CornerRadius = UDim.new(0, 6)
 
 -- Noclip Button
@@ -377,7 +527,7 @@ NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or
 NoclipButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 NoclipButton.Font = Enum.Font.GothamBold
 NoclipButton.TextSize = 14
-NoclipButton.Parent = MainFrame
+NoclipButton.Parent = ContentFrame
 Instance.new("UICorner", NoclipButton).CornerRadius = UDim.new(0, 6)
 
 -- Auto-Teleport Toggle
@@ -388,24 +538,26 @@ AutoTPButton.BackgroundColor3 = autoTeleportEnabled and Color3.fromRGB(0, 150, 0
 AutoTPButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 AutoTPButton.Font = Enum.Font.GothamBold
 AutoTPButton.TextSize = 14
-AutoTPButton.Parent = MainFrame
+AutoTPButton.Parent = ContentFrame
 Instance.new("UICorner", AutoTPButton).CornerRadius = UDim.new(0, 6)
 
--- Exit Button
-local ExitButton = Instance.new("TextButton")
-ExitButton.Size = UDim2.new(0.9, 0, 0, 25)
-ExitButton.Text = "Exit Script"
-ExitButton.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
-ExitButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-ExitButton.Font = Enum.Font.GothamBold
-ExitButton.TextSize = 14
-ExitButton.Parent = MainFrame
-Instance.new("UICorner", ExitButton).CornerRadius = UDim.new(0, 6)
+-- Minimize logic
+local function UpdateMinimize()
+    ContentFrame.Visible = not minimized
+    MainFrame.Size = minimized and UDim2.new(0, 260, 0, 28) or UDim2.new(0, 260, 0, 0)
+    MinimizeButton.Text = minimized and "□" or "─"
+    Settings.minimized = minimized
+    SettingsManager.AutoSave()
+end
 
---// Draggable GUI (with position saving)
-do
+if minimized then
+    UpdateMinimize()
+end
+
+--// Draggable GUI
+local function MakeDraggable(frame)
     local dragging, dragInput, mousePos, framePos
-    MainFrame.InputBegan:Connect(function(input)
+    frame.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = true
             mousePos = input.Position
@@ -413,14 +565,13 @@ do
             input.Changed:Connect(function()
                 if input.UserInputState == Enum.UserInputState.End then 
                     dragging = false 
-                    -- Save position when drag ends
                     Settings.guiPosition = MainFrame.Position
                     SettingsManager.AutoSave()
                 end
             end)
         end
     end)
-    MainFrame.InputChanged:Connect(function(input)
+    frame.InputChanged:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement then dragInput = input end
     end)
     RunService.RenderStepped:Connect(function()
@@ -432,12 +583,35 @@ do
     end)
 end
 
+MakeDraggable(TitleBar)
+
 --// Button Logic
+MinimizeButton.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    UpdateMinimize()
+end)
+
+CloseButton.MouseButton1Click:Connect(function()
+    Settings.guiPosition = MainFrame.Position
+    Settings.minimized = minimized
+    SettingsManager.Save()
+    ScreenGui:Destroy()
+    script:Destroy()
+end)
+
 ToggleButton.MouseButton1Click:Connect(function()
     wandEnabled = not wandEnabled
     Settings.wandEnabled = wandEnabled
     ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
     ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
+    SettingsManager.AutoSave()
+end)
+
+HoverButton.MouseButton1Click:Connect(function()
+    hoverEnabled = not hoverEnabled
+    Settings.hoverEnabled = hoverEnabled
+    HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
+    HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
     SettingsManager.AutoSave()
 end)
 
@@ -517,24 +691,68 @@ AutoTPButton.MouseButton1Click:Connect(function()
     SettingsManager.AutoSave()
 end)
 
-BaseButton.MouseButton1Click:Connect(function()
+-- TP Button setup helper
+local function SetupTPButton(mainBtn, renderBtn, settingKey, renderKey, label)
+    mainBtn.MouseButton1Click:Connect(function()
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local cf = hrp.CFrame
+            Settings[settingKey] = cf
+            _G[settingKey] = cf
+            mainBtn.Text = label .. " ✓"
+            mainBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+            SettingsManager.AutoSave()
+        end
+    end)
+
+    renderBtn.MouseButton1Click:Connect(function()
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local cf = hrp.CFrame
+            Settings[renderKey] = cf
+            _G[renderKey] = cf
+            renderBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 200)
+            SettingsManager.AutoSave()
+        end
+    end)
+end
+
+SetupTPButton(DesertBtn, DesertRenderBtn, "teleportCFrameDesert", "renderDesert", "Desert")
+SetupTPButton(TundraBtn, TundraRenderBtn, "teleportCFrameTundra", "renderTundra", "Tundra")
+SetupTPButton(FarmBtn, FarmRenderBtn, "teleportCFrameFarm", "renderFarm", "Farm")
+SetupTPButton(SpiderBtn, SpiderRenderBtn, "teleportCFrameSpider", "renderSpider", "Spider")
+
+-- Forest setup (4 spots)
+local currentForestSpot = 1
+local forestSpots = {
+    {key = "teleportCFrameForest1", label = "Forest 1/4"},
+    {key = "teleportCFrameForest2", label = "Forest 2/4"},
+    {key = "teleportCFrameForest3", label = "Forest 3/4"},
+    {key = "teleportCFrameForest4", label = "Forest 4/4"},
+}
+
+ForestSetBtn.MouseButton1Click:Connect(function()
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if hrp then
-        teleportCFrameBase = hrp.CFrame
-        Settings.teleportCFrameBase = teleportCFrameBase
-        BaseButton.Text = "Base ✓"
-        BaseButton.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+        local spot = forestSpots[currentForestSpot]
+        Settings[spot.key] = hrp.CFrame
+        _G[spot.key] = hrp.CFrame
+        currentForestSpot = currentForestSpot % 4 + 1
+        ForestLabel.Text = forestSpots[currentForestSpot].label
+        ForestLabel.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+        task.delay(0.3, function()
+            ForestLabel.BackgroundColor3 = Color3.fromRGB(34, 139, 34)
+        end)
         SettingsManager.AutoSave()
     end
 end)
 
-DesertButton.MouseButton1Click:Connect(function()
+ForestRenderBtn.MouseButton1Click:Connect(function()
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if hrp then
-        teleportCFrameDesert = hrp.CFrame
-        Settings.teleportCFrameDesert = teleportCFrameDesert
-        DesertButton.Text = "Desert ✓"
-        DesertButton.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+        Settings.renderForest = hrp.CFrame
+        renderForest = hrp.CFrame
+        ForestRenderBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 200)
         SettingsManager.AutoSave()
     end
 end)
@@ -550,23 +768,35 @@ end)
 
 LoadButton.MouseButton1Click:Connect(function()
     if SettingsManager.Load() then
-        -- Apply loaded settings
         wandEnabled = Settings.wandEnabled
         attackSpeed = Settings.attackSpeed
         attackRange = Settings.attackRange
         walkSpeed = Settings.walkSpeed
         multiAttacks = Settings.multiAttacks
         autoTeleportEnabled = Settings.autoTeleportEnabled
-        nearbyRadius = Settings.nearbyRadius
-        returnDelay = Settings.returnDelay
         frozen = Settings.frozen
         noclipEnabled = Settings.noclipEnabled
-        teleportCFrameBase = Settings.teleportCFrameBase
+        hoverEnabled = Settings.hoverEnabled
+        minimized = Settings.minimized
+
         teleportCFrameDesert = Settings.teleportCFrameDesert
-        
-        -- Update UI
+        teleportCFrameTundra = Settings.teleportCFrameTundra
+        teleportCFrameForest1 = Settings.teleportCFrameForest1
+        teleportCFrameForest2 = Settings.teleportCFrameForest2
+        teleportCFrameForest3 = Settings.teleportCFrameForest3
+        teleportCFrameForest4 = Settings.teleportCFrameForest4
+        teleportCFrameFarm = Settings.teleportCFrameFarm
+        teleportCFrameSpider = Settings.teleportCFrameSpider
+        renderDesert = Settings.renderDesert
+        renderTundra = Settings.renderTundra
+        renderForest = Settings.renderForest
+        renderFarm = Settings.renderFarm
+        renderSpider = Settings.renderSpider
+
         ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
         ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
+        HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
+        HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
         SpeedBox.Text = tostring(attackSpeed)
         RangeBox.Text = tostring(attackRange)
         WalkSpeedBox.Text = tostring(walkSpeed)
@@ -577,15 +807,30 @@ LoadButton.MouseButton1Click:Connect(function()
         NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(50, 50, 50)
         AutoTPButton.Text = "Auto-TP: " .. (autoTeleportEnabled and "ON" or "OFF")
         AutoTPButton.BackgroundColor3 = autoTeleportEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(50, 50, 50)
-        BaseButton.Text = teleportCFrameBase and "Base ✓" or "Base"
-        BaseButton.BackgroundColor3 = teleportCFrameBase and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(100, 100, 100)
-        DesertButton.Text = teleportCFrameDesert and "Desert ✓" or "Desert"
-        DesertButton.BackgroundColor3 = teleportCFrameDesert and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(100, 100, 100)
-        
+
+        DesertBtn.Text = teleportCFrameDesert and "Desert ✓" or "Desert"
+        DesertBtn.BackgroundColor3 = teleportCFrameDesert and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(194, 178, 128)
+        DesertRenderBtn.BackgroundColor3 = renderDesert and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
+        TundraBtn.Text = teleportCFrameTundra and "Tundra ✓" or "Tundra"
+        TundraBtn.BackgroundColor3 = teleportCFrameTundra and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(176, 196, 222)
+        TundraRenderBtn.BackgroundColor3 = renderTundra and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
+        FarmBtn.Text = teleportCFrameFarm and "Farm ✓" or "Farm"
+        FarmBtn.BackgroundColor3 = teleportCFrameFarm and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(210, 180, 140)
+        FarmRenderBtn.BackgroundColor3 = renderFarm and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
+        SpiderBtn.Text = teleportCFrameSpider and "Spider ✓" or "Spider"
+        SpiderBtn.BackgroundColor3 = teleportCFrameSpider and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(170, 0, 255)
+        SpiderRenderBtn.BackgroundColor3 = renderSpider and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
+        ForestRenderBtn.BackgroundColor3 = renderForest and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
         if Settings.guiPosition then
             MainFrame.Position = Settings.guiPosition
         end
-        
+        UpdateMinimize()
+
         LoadButton.Text = "✓ Loaded!"
         task.delay(1.5, function()
             LoadButton.Text = "🔄 Load"
@@ -596,13 +841,6 @@ LoadButton.MouseButton1Click:Connect(function()
             LoadButton.Text = "🔄 Load"
         end)
     end
-end)
-
-ExitButton.MouseButton1Click:Connect(function()
-    Settings.guiPosition = MainFrame.Position
-    SettingsManager.Save()
-    ScreenGui:Destroy()
-    script:Destroy()
 end)
 
 --// Helper Functions
@@ -635,6 +873,16 @@ local function countNearbySpiders(root, radius)
     return false
 end
 
+-- Render helper function
+local function DoRenderTeleport(renderCF, targetCF)
+    if not renderCF or not targetCF then return end
+    local hrp = getHumanoidRootPart()
+    if not hrp then return end
+    hrp.Parent:PivotTo(renderCF)
+    task.wait(1)
+    hrp.Parent:PivotTo(targetCF)
+end
+
 --// Noclip Loop
 RunService.RenderStepped:Connect(function()
     if noclipEnabled then
@@ -649,7 +897,27 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
---// Spider Disappearance Teleport Loop
+--// Hover Loop (for royalSpiderModel)
+RunService.RenderStepped:Connect(function()
+    if not hoverEnabled or not wandEnabled then return end
+    local hrp = getHumanoidRootPart()
+    if not hrp then return end
+
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name == "royalSpiderModel" then
+            local mobHrp = obj:FindFirstChild("HumanoidRootPart")
+            if mobHrp then
+                local dist = (mobHrp.Position - hrp.Position).Magnitude
+                if dist < attackRange then
+                    hrp.Parent:PivotTo(CFrame.new(mobHrp.Position + Vector3.new(0, 8, 0), mobHrp.Position))
+                    break
+                end
+            end
+        end
+    end
+end)
+
+--// Spider Disappearance Teleport Loop (NEW SEQUENCE)
 task.spawn(function()
     while task.wait(1) do
         local hrp = getHumanoidRootPart()
@@ -663,35 +931,57 @@ task.spawn(function()
             spiderDisappeared = false
         elseif not spiderNearby and not spiderDisappeared then
             spiderDisappeared = true
+            originalCF = hrp.CFrame
 
-            local originalCF = hrp.CFrame
-            if teleportCFrameBase and teleportCFrameDesert then
+            if teleportCFrameDesert and teleportCFrameTundra and teleportCFrameForest1 
+               and teleportCFrameForest2 and teleportCFrameForest3 and teleportCFrameForest4 
+               and teleportCFrameFarm and teleportCFrameSpider then
+
                 spiderState = "🟣"
                 SpiderStatusLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
 
-                -- Base 45s
-                hrp.Parent:PivotTo(teleportCFrameBase)
-                for i = 45, 1, -1 do
-                    CountdownLabel.Text = "Timer: " .. i .. "s"
+                -- 90s - Desert
+                DoRenderTeleport(renderDesert, teleportCFrameDesert)
+                for i = 90, 1, -1 do
+                    CountdownLabel.Text = "Desert: " .. i .. "s"
                     task.wait(1)
                 end
 
-                -- Desert 175s
-                hrp.Parent:PivotTo(teleportCFrameDesert)
-                for i = 175, 1, -1 do
-                    CountdownLabel.Text = "Timer: " .. i .. "s"
+                -- 30s - Tundra
+                DoRenderTeleport(renderTundra, teleportCFrameTundra)
+                for i = 30, 1, -1 do
+                    CountdownLabel.Text = "Tundra: " .. i .. "s"
                     task.wait(1)
                 end
 
-                -- Base 65s
-                hrp.Parent:PivotTo(teleportCFrameBase)
-                for i = 65, 1, -1 do
-                    CountdownLabel.Text = "Timer: " .. i .. "s"
+                -- 60s - Forest (cycles through 4 spots, 15s each)
+                local forestCFs = {teleportCFrameForest1, teleportCFrameForest2, teleportCFrameForest3, teleportCFrameForest4}
+                for spotIdx = 1, 4 do
+                    DoRenderTeleport(renderForest, forestCFs[spotIdx])
+                    for i = 15, 1, -1 do
+                        CountdownLabel.Text = "Forest " .. spotIdx .. "/4: " .. i .. "s"
+                        task.wait(1)
+                    end
+                end
+
+                -- 30s - Tundra
+                DoRenderTeleport(renderTundra, teleportCFrameTundra)
+                for i = 30, 1, -1 do
+                    CountdownLabel.Text = "Tundra: " .. i .. "s"
                     task.wait(1)
                 end
 
-                -- Back to original
-                hrp.Parent:PivotTo(originalCF)
+                -- 90s - Farm
+                currentFarmMode = true
+                DoRenderTeleport(renderFarm, teleportCFrameFarm)
+                for i = 90, 1, -1 do
+                    CountdownLabel.Text = "Farm: " .. i .. "s"
+                    task.wait(1)
+                end
+                currentFarmMode = false
+
+                -- Back to original (Spider spot)
+                DoRenderTeleport(renderSpider, originalCF)
                 CountdownLabel.Text = "Timer: 0s"
                 spiderState = "🔴"
                 SpiderStatusLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
@@ -707,32 +997,44 @@ task.spawn(function()
     while true do
         local hrp = getHumanoidRootPart()
         if hrp then
-            -- Auto-Teleport (crystalGuardianModel)
-            crystalCount = countNearbyGuardians(hrp, nearbyRadius)
-            if crystalCount >= 5 and autoTeleportEnabled and not isTeleporting then
-                isTeleporting = true
-                local originalCF = hrp.CFrame
-                hrp.Parent:PivotTo(teleportCFrameBase)
-                local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
-                local ws, jp
-                if hum then ws, jp = hum.WalkSpeed, hum.JumpPower; hum.WalkSpeed, hum.JumpPower = 0, 0 end
-                for i = returnDelay, 1, -1 do
-                    CountdownLabel.Text = "Timer: " .. i .. "s"
-                    task.wait(1)
+            -- Auto-Teleport (crystalGuardianModel) - only in non-farm mode
+            if not currentFarmMode then
+                crystalCount = countNearbyGuardians(hrp, nearbyRadius)
+                if crystalCount >= 5 and autoTeleportEnabled and not isTeleporting then
+                    isTeleporting = true
+                    local originalGuardianCF = hrp.CFrame
+                    hrp.Parent:PivotTo(teleportCFrameSpider or originalGuardianCF)
+                    local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
+                    local ws, jp
+                    if hum then ws, jp = hum.WalkSpeed, hum.JumpPower; hum.WalkSpeed, hum.JumpPower = 0, 0 end
+                    for i = returnDelay, 1, -1 do
+                        CountdownLabel.Text = "Safe: " .. i .. "s"
+                        task.wait(1)
+                    end
+                    CountdownLabel.Text = "Timer: 0s"
+                    hrp.Parent:PivotTo(originalGuardianCF)
+                    if hum and not frozen then hum.WalkSpeed, hum.JumpPower = ws or walkSpeed, jp or 50 end
+                    isTeleporting = false
                 end
-                CountdownLabel.Text = "Timer: 0s"
-                hrp.Parent:PivotTo(originalCF)
-                if hum and not frozen then hum.WalkSpeed, hum.JumpPower = ws or walkSpeed, jp or 50 end
-                isTeleporting = false
             end
 
             -- Wand Attack
             if wandEnabled then
                 local mobs = {}
                 local royalTarget = nil
+                local activeTargets = currentFarmMode and farmMobs or targetMobs
+                local isFarm = currentFarmMode
+
                 for _, obj in pairs(workspace:GetDescendants()) do
                     if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") then
-                        if targetMobs[obj.Name] then
+                        local isTarget = false
+                        if isFarm then
+                            isTarget = farmMobs[obj.Name] == true
+                        else
+                            isTarget = targetMobs[obj.Name] ~= nil
+                        end
+
+                        if isTarget then
                             local ignored = false
                             for _, ignore in ipairs(ignoreList) do
                                 if string.find(obj.Name, ignore) then ignored = true break end
@@ -740,8 +1042,12 @@ task.spawn(function()
                             if not ignored then
                                 local dist = (obj.HumanoidRootPart.Position - hrp.Position).Magnitude
                                 if dist < attackRange then
-                                    table.insert(mobs, {model = obj, priority = targetMobs[obj.Name], dist = dist})
-                                    if obj.Name == "royalSpiderModel" then royalTarget = obj end
+                                    if isFarm then
+                                        table.insert(mobs, {model = obj, dist = dist})
+                                    else
+                                        table.insert(mobs, {model = obj, priority = targetMobs[obj.Name], dist = dist})
+                                        if obj.Name == "royalSpiderModel" then royalTarget = obj end
+                                    end
                                 end
                             end
                         end
@@ -749,18 +1055,22 @@ task.spawn(function()
                 end
 
                 local targetsToAttack = {}
-                if royalTarget then
+                if not isFarm and royalTarget then
                     targetsToAttack = {{model = royalTarget}}
                 else
-                    table.sort(mobs, function(a, b)
-                        if a.priority == b.priority then return a.dist < b.dist else return a.priority < b.priority end
-                    end)
+                    if isFarm then
+                        table.sort(mobs, function(a, b) return a.dist < b.dist end)
+                    else
+                        table.sort(mobs, function(a, b)
+                            if a.priority == b.priority then return a.dist < b.dist else return a.priority < b.priority end
+                        end)
+                    end
                     targetsToAttack = mobs
                 end
 
                 if #targetsToAttack > 0 then
                     local topMob = targetsToAttack[1].model
-                    StatusLabel.Text = "Target: " .. topMob.Name
+                    StatusLabel.Text = "Target: " .. topMob.Name .. (currentFarmMode and " [FARM]" or "")
                     StatusLabel.TextColor3 = mobColors[topMob.Name] or Color3.fromRGB(255, 255, 255)
                     for _, mob in ipairs(targetsToAttack) do
                         for i = 1, multiAttacks do
@@ -771,7 +1081,8 @@ task.spawn(function()
                     local now = tick()
                     StatusLabel.Text = "Target: None"
                     StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
-                    if now - lastAutoAttack >= 5 then
+                    local idleDelay = currentFarmMode and 1 or 5
+                    if now - lastAutoAttack >= idleDelay then
                         lastAutoAttack = now
                         Event:FireServer("use", "wand", "place", hrp.Position + hrp.CFrame.LookVector * 10)
                     end
@@ -792,7 +1103,6 @@ task.defer(function()
     if hum then hum.WalkSpeed = walkSpeed end
 end)
 
--- Auto-save on character added (in case settings changed)
 LocalPlayer.CharacterAdded:Connect(function(char)
     task.wait(1)
     local hum = char:WaitForChild("Humanoid")
