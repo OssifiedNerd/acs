@@ -180,6 +180,7 @@ local targetMobs = {
     ["sandGeneralModel"] = 5,
     ["Sheds"] = 6,
     ["desertBossModel"] = 7
+    ["iceSoldierModel"] = 8
 }
 
 -- Farm mode targets (no priority)
