@@ -16,9 +16,8 @@ local Settings = {
     multiAttacks = 3,
     autoTeleportEnabled = true,
     nearbyRadius = 150,
-    returnDelay = 1, -- Changed to 1s
+    returnDelay = 1,
     noclipEnabled = false,
-    frozen = false,
     hoverEnabled = false,
     flyEnabled = false,
     flySpeed = 100,
@@ -41,7 +40,7 @@ local Settings = {
     renderSpider = nil,
 }
 
-local SETTINGS_FILE = "SpiderToolSettings_v6.json"
+local SETTINGS_FILE = "SpiderToolSettings_v8.json"
 local SAVE_COOLDOWN = 2
 local lastSaveTime = 0
 
@@ -50,7 +49,8 @@ local flyBV = nil
 local flyBG = nil
 local hoverBP = nil
 local hoverBG = nil
-local frozenCF = nil
+local preHoverCF = nil
+local lockedRoyalSpider = nil
 
 --// Settings Manager
 local SettingsManager = {}
@@ -122,18 +122,58 @@ function SettingsManager.Save()
         end
     end
 
-    pcall(function()
+    local success, err = pcall(function()
         writefile(SETTINGS_FILE, HttpService:JSONEncode(dataToSave))
     end)
+    return success
 end
 
-local autoSaveConnection
+function SettingsManager.Clear()
+    pcall(function()
+        if isfile(SETTINGS_FILE) then
+            delfile(SETTINGS_FILE)
+        end
+    end)
+    -- Reset Settings to defaults
+    for key, value in pairs(Settings) do
+        if key:find("CFrame") or key:find("render") then
+            Settings[key] = nil
+        elseif key == "guiPosition" then
+            Settings[key] = nil
+        else
+            Settings[key] = value
+        end
+    end
+    Settings.wandEnabled = false
+    Settings.attackSpeed = 0.3
+    Settings.attackRange = 100
+    Settings.walkSpeed = 50
+    Settings.multiAttacks = 3
+    Settings.autoTeleportEnabled = true
+    Settings.nearbyRadius = 150
+    Settings.returnDelay = 1
+    Settings.noclipEnabled = false
+    Settings.hoverEnabled = false
+    Settings.flyEnabled = false
+    Settings.flySpeed = 100
+    Settings.minimized = false
+end
+
+local autoSaveConnection = nil
 function SettingsManager.AutoSave()
-    if autoSaveConnection then autoSaveConnection:Disconnect() end
-    autoSaveConnection = task.delay(SAVE_COOLDOWN, SettingsManager.Save)
+    if autoSaveConnection then
+        pcall(function()
+            if typeof(autoSaveConnection) == "RBXScriptConnection" then
+                autoSaveConnection:Disconnect()
+            end
+        end)
+        autoSaveConnection = nil
+    end
+    autoSaveConnection = task.delay(SAVE_COOLDOWN, function()
+        SettingsManager.Save()
+        autoSaveConnection = nil
+    end)
 end
-
-SettingsManager.Load()
 
 --// Sync Settings to Local Variables
 local function SyncLocals()
@@ -145,7 +185,6 @@ local function SyncLocals()
     autoTeleportEnabled = Settings.autoTeleportEnabled
     nearbyRadius = Settings.nearbyRadius
     returnDelay = Settings.returnDelay
-    frozen = Settings.frozen
     noclipEnabled = Settings.noclipEnabled
     hoverEnabled = Settings.hoverEnabled
     flyEnabled = Settings.flyEnabled
@@ -168,8 +207,6 @@ local function SyncLocals()
     renderSpider = Settings.renderSpider
 end
 
-SyncLocals()
-
 --// Runtime Variables
 local lastAutoAttack = 0
 local isTeleporting = false
@@ -178,7 +215,6 @@ local spiderDisappeared = false
 local originalCF = nil
 local currentFarmMode = false
 local safeFarmMode = false
-local hoveredRoyalSpider = nil
 
 -- Target mobs (priority) - Normal mode
 local targetMobs = {
@@ -229,7 +265,7 @@ ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Size = UDim2.new(0, 260, 0, 0)
-MainFrame.Position = Settings.guiPosition or UDim2.new(0.5, -130, 0.5, -200)
+MainFrame.Position = UDim2.new(0.5, -130, 0.5, -200)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 MainFrame.BorderSizePixel = 0
 MainFrame.Parent = ScreenGui
@@ -248,7 +284,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -60, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🕷️ Spider Tool v6"
+TitleLabel.Text = "🕷️ Spider Tool v8"
 TitleLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 14
@@ -258,7 +294,7 @@ TitleLabel.Parent = TitleBar
 local MinimizeButton = Instance.new("TextButton")
 MinimizeButton.Size = UDim2.new(0, 24, 0, 24)
 MinimizeButton.Position = UDim2.new(1, -52, 0, 2)
-MinimizeButton.Text = minimized and "□" or "─"
+MinimizeButton.Text = "─"
 MinimizeButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 MinimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 MinimizeButton.Font = Enum.Font.GothamBold
@@ -294,8 +330,8 @@ Instance.new("UIPadding", ContentFrame).PaddingBottom = UDim.new(0, 10)
 -- Wand Toggle Button
 local ToggleButton = Instance.new("TextButton")
 ToggleButton.Size = UDim2.new(0.9, 0, 0, 30)
-ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
-ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
+ToggleButton.Text = "Toggle Wand: OFF"
+ToggleButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 ToggleButton.Font = Enum.Font.GothamBold
 ToggleButton.TextSize = 14
@@ -305,8 +341,8 @@ Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 6)
 -- Hover Button
 local HoverButton = Instance.new("TextButton")
 HoverButton.Size = UDim2.new(0.9, 0, 0, 25)
-HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
-HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
+HoverButton.Text = "Hover: OFF"
+HoverButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 HoverButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 HoverButton.Font = Enum.Font.GothamBold
 HoverButton.TextSize = 14
@@ -316,8 +352,8 @@ Instance.new("UICorner", HoverButton).CornerRadius = UDim.new(0, 6)
 -- Fly Button
 local FlyButton = Instance.new("TextButton")
 FlyButton.Size = UDim2.new(0.9, 0, 0, 25)
-FlyButton.Text = "Fly: " .. (flyEnabled and "ON" or "OFF")
-FlyButton.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 200) or Color3.fromRGB(50, 50, 50)
+FlyButton.Text = "Fly: OFF"
+FlyButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 FlyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 FlyButton.Font = Enum.Font.GothamBold
 FlyButton.TextSize = 14
@@ -345,7 +381,7 @@ Instance.new("UICorner", FlySpeedLabel).CornerRadius = UDim.new(0, 6)
 
 local FlySpeedBox = Instance.new("TextBox")
 FlySpeedBox.Size = UDim2.new(0.5, -2, 1, 0)
-FlySpeedBox.Text = tostring(flySpeed)
+FlySpeedBox.Text = "100"
 FlySpeedBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 FlySpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 FlySpeedBox.Font = Enum.Font.Gotham
@@ -365,7 +401,7 @@ InputLayout.Padding = UDim.new(0, 5)
 
 local SpeedBox = Instance.new("TextBox")
 SpeedBox.Size = UDim2.new(0.33, -2, 1, 0)
-SpeedBox.Text = tostring(attackSpeed)
+SpeedBox.Text = "0.3"
 SpeedBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 SpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 SpeedBox.Font = Enum.Font.Gotham
@@ -376,7 +412,7 @@ Instance.new("UICorner", SpeedBox).CornerRadius = UDim.new(0, 6)
 
 local RangeBox = Instance.new("TextBox")
 RangeBox.Size = UDim2.new(0.33, -2, 1, 0)
-RangeBox.Text = tostring(attackRange)
+RangeBox.Text = "100"
 RangeBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 RangeBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 RangeBox.Font = Enum.Font.Gotham
@@ -387,7 +423,7 @@ Instance.new("UICorner", RangeBox).CornerRadius = UDim.new(0, 6)
 
 local WalkSpeedBox = Instance.new("TextBox")
 WalkSpeedBox.Size = UDim2.new(0.33, -2, 1, 0)
-WalkSpeedBox.Text = tostring(walkSpeed)
+WalkSpeedBox.Text = "50"
 WalkSpeedBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 WalkSpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 WalkSpeedBox.Font = Enum.Font.Gotham
@@ -417,7 +453,7 @@ Instance.new("UICorner", MultiLabel).CornerRadius = UDim.new(0, 6)
 
 local MultiBox = Instance.new("TextBox")
 MultiBox.Size = UDim2.new(0.5, -2, 1, 0)
-MultiBox.Text = tostring(multiAttacks)
+MultiBox.Text = "3"
 MultiBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 MultiBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 MultiBox.Font = Enum.Font.Gotham
@@ -466,8 +502,8 @@ local function CreateTPButton(name, color, savedCF, renderCF)
 
     local MainBtn = Instance.new("TextButton")
     MainBtn.Size = UDim2.new(0.75, 0, 1, 0)
-    MainBtn.Text = savedCF and (name .. " ✓") or name
-    MainBtn.BackgroundColor3 = savedCF and Color3.fromRGB(0, 200, 0) or color
+    MainBtn.Text = name
+    MainBtn.BackgroundColor3 = color
     MainBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     MainBtn.Font = Enum.Font.GothamBold
     MainBtn.TextSize = 13
@@ -477,7 +513,7 @@ local function CreateTPButton(name, color, savedCF, renderCF)
     local RenderBtn = Instance.new("TextButton")
     RenderBtn.Size = UDim2.new(0.25, 0, 1, 0)
     RenderBtn.Text = "R"
-    RenderBtn.BackgroundColor3 = renderCF and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+    RenderBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
     RenderBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     RenderBtn.Font = Enum.Font.GothamBold
     RenderBtn.TextSize = 12
@@ -488,10 +524,10 @@ local function CreateTPButton(name, color, savedCF, renderCF)
 end
 
 -- Desert TP
-local DesertRow, DesertBtn, DesertRenderBtn = CreateTPButton("Desert", Color3.fromRGB(194, 178, 128), teleportCFrameDesert, renderDesert)
+local DesertRow, DesertBtn, DesertRenderBtn = CreateTPButton("Desert", Color3.fromRGB(194, 178, 128), nil, nil)
 
 -- Tundra TP
-local TundraRow, TundraBtn, TundraRenderBtn = CreateTPButton("Tundra", Color3.fromRGB(176, 196, 222), teleportCFrameTundra, renderTundra)
+local TundraRow, TundraBtn, TundraRenderBtn = CreateTPButton("Tundra", Color3.fromRGB(176, 196, 222), nil, nil)
 
 -- Forest TP Frame (1/4 label)
 local ForestRow = Instance.new("Frame")
@@ -515,7 +551,7 @@ Instance.new("UICorner", ForestLabel).CornerRadius = UDim.new(0, 6)
 local ForestRenderBtn = Instance.new("TextButton")
 ForestRenderBtn.Size = UDim2.new(0.25, -2, 1, 0)
 ForestRenderBtn.Text = "R"
-ForestRenderBtn.BackgroundColor3 = renderForest and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+ForestRenderBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
 ForestRenderBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 ForestRenderBtn.Font = Enum.Font.GothamBold
 ForestRenderBtn.TextSize = 12
@@ -533,10 +569,10 @@ ForestSetBtn.Parent = ForestRow
 Instance.new("UICorner", ForestSetBtn).CornerRadius = UDim.new(0, 6)
 
 -- Farm TP
-local FarmRow, FarmBtn, FarmRenderBtn = CreateTPButton("Farm", Color3.fromRGB(210, 180, 140), teleportCFrameFarm, renderFarm)
+local FarmRow, FarmBtn, FarmRenderBtn = CreateTPButton("Farm", Color3.fromRGB(210, 180, 140), nil, nil)
 
 -- Spider TP (original position)
-local SpiderRow, SpiderBtn, SpiderRenderBtn = CreateTPButton("Spider", Color3.fromRGB(170, 0, 255), teleportCFrameSpider, renderSpider)
+local SpiderRow, SpiderBtn, SpiderRenderBtn = CreateTPButton("Spider", Color3.fromRGB(170, 0, 255), nil, nil)
 
 -- Settings Buttons Row
 local SettingsRow = Instance.new("Frame")
@@ -557,32 +593,21 @@ SaveButton.TextSize = 14
 SaveButton.Parent = SettingsRow
 Instance.new("UICorner", SaveButton).CornerRadius = UDim.new(0, 6)
 
-local LoadButton = Instance.new("TextButton")
-LoadButton.Size = UDim2.new(0.48, 0, 1, 0)
-LoadButton.Text = "🔄 Load"
-LoadButton.BackgroundColor3 = Color3.fromRGB(100, 100, 0)
-LoadButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-LoadButton.Font = Enum.Font.GothamBold
-LoadButton.TextSize = 14
-LoadButton.Parent = SettingsRow
-Instance.new("UICorner", LoadButton).CornerRadius = UDim.new(0, 6)
-
--- Freeze Button
-local FreezeButton = Instance.new("TextButton")
-FreezeButton.Size = UDim2.new(0.9, 0, 0, 25)
-FreezeButton.Text = "Freeze: " .. (frozen and "ON" or "OFF")
-FreezeButton.BackgroundColor3 = frozen and Color3.fromRGB(0, 100, 255) or Color3.fromRGB(50, 50, 50)
-FreezeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-FreezeButton.Font = Enum.Font.GothamBold
-FreezeButton.TextSize = 14
-FreezeButton.Parent = ContentFrame
-Instance.new("UICorner", FreezeButton).CornerRadius = UDim.new(0, 6)
+local ClearButton = Instance.new("TextButton")
+ClearButton.Size = UDim2.new(0.48, 0, 1, 0)
+ClearButton.Text = "🗑️ Clear"
+ClearButton.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+ClearButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ClearButton.Font = Enum.Font.GothamBold
+ClearButton.TextSize = 14
+ClearButton.Parent = SettingsRow
+Instance.new("UICorner", ClearButton).CornerRadius = UDim.new(0, 6)
 
 -- Noclip Button
 local NoclipButton = Instance.new("TextButton")
 NoclipButton.Size = UDim2.new(0.9, 0, 0, 25)
-NoclipButton.Text = "Noclip: " .. (noclipEnabled and "ON" or "OFF")
-NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(50, 50, 50)
+NoclipButton.Text = "Noclip: OFF"
+NoclipButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 NoclipButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 NoclipButton.Font = Enum.Font.GothamBold
 NoclipButton.TextSize = 14
@@ -592,8 +617,8 @@ Instance.new("UICorner", NoclipButton).CornerRadius = UDim.new(0, 6)
 -- Auto-Teleport Toggle
 local AutoTPButton = Instance.new("TextButton")
 AutoTPButton.Size = UDim2.new(0.9, 0, 0, 25)
-AutoTPButton.Text = "Auto-TP: " .. (autoTeleportEnabled and "ON" or "OFF")
-AutoTPButton.BackgroundColor3 = autoTeleportEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(50, 50, 50)
+AutoTPButton.Text = "Auto-TP: ON"
+AutoTPButton.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
 AutoTPButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 AutoTPButton.Font = Enum.Font.GothamBold
 AutoTPButton.TextSize = 14
@@ -607,10 +632,6 @@ local function UpdateMinimize()
     MinimizeButton.Text = minimized and "□" or "─"
     Settings.minimized = minimized
     SettingsManager.AutoSave()
-end
-
-if minimized then
-    UpdateMinimize()
 end
 
 --// Draggable GUI
@@ -645,6 +666,11 @@ end
 MakeDraggable(TitleBar)
 
 --// Fly Helpers
+local function getHumanoidRootPart()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
 local function SetupFly()
     if not flyEnabled then return end
     local hrp = getHumanoidRootPart()
@@ -655,11 +681,14 @@ local function SetupFly()
     if flyBG then flyBG:Destroy() end
 
     flyBV = Instance.new("BodyVelocity")
+    flyBV.Name = "SpiderFlyBV"
     flyBV.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
     flyBV.Velocity = Vector3.new(0, 0, 0)
+    flyBV.P = 1250
     flyBV.Parent = hrp
 
     flyBG = Instance.new("BodyGyro")
+    flyBG.Name = "SpiderFlyBG"
     flyBG.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
     flyBG.P = 10000
     flyBG.CFrame = hrp.CFrame
@@ -668,6 +697,7 @@ local function SetupFly()
     if hum then
         hum.PlatformStand = false
         hum.AutoRotate = false
+        hum.Sit = false
     end
 end
 
@@ -676,6 +706,72 @@ local function CleanupFly()
     if flyBG then flyBG:Destroy(); flyBG = nil end
     local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
     if hum then hum.AutoRotate = true end
+end
+
+--// Apply ALL saved settings to UI
+local function ApplySettingsToUI()
+    SyncLocals()
+
+    ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
+    ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
+
+    HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
+    HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
+
+    FlyButton.Text = "Fly: " .. (flyEnabled and "ON" or "OFF")
+    FlyButton.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 200) or Color3.fromRGB(50, 50, 50)
+
+    FlySpeedBox.Text = tostring(flySpeed)
+    SpeedBox.Text = tostring(attackSpeed)
+    RangeBox.Text = tostring(attackRange)
+    WalkSpeedBox.Text = tostring(walkSpeed)
+    MultiBox.Text = tostring(multiAttacks)
+
+    NoclipButton.Text = "Noclip: " .. (noclipEnabled and "ON" or "OFF")
+    NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(50, 50, 50)
+
+    AutoTPButton.Text = "Auto-TP: " .. (autoTeleportEnabled and "ON" or "OFF")
+    AutoTPButton.BackgroundColor3 = autoTeleportEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(50, 50, 50)
+
+    DesertBtn.Text = teleportCFrameDesert and "Desert ✓" or "Desert"
+    DesertBtn.BackgroundColor3 = teleportCFrameDesert and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(194, 178, 128)
+    DesertRenderBtn.BackgroundColor3 = renderDesert and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
+    TundraBtn.Text = teleportCFrameTundra and "Tundra ✓" or "Tundra"
+    TundraBtn.BackgroundColor3 = teleportCFrameTundra and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(176, 196, 222)
+    TundraRenderBtn.BackgroundColor3 = renderTundra and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
+    FarmBtn.Text = teleportCFrameFarm and "Farm ✓" or "Farm"
+    FarmBtn.BackgroundColor3 = teleportCFrameFarm and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(210, 180, 140)
+    FarmRenderBtn.BackgroundColor3 = renderFarm and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
+    SpiderBtn.Text = teleportCFrameSpider and "Spider ✓" or "Spider"
+    SpiderBtn.BackgroundColor3 = teleportCFrameSpider and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(170, 0, 255)
+    SpiderRenderBtn.BackgroundColor3 = renderSpider and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
+    ForestRenderBtn.BackgroundColor3 = renderForest and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
+
+    if Settings.guiPosition then
+        MainFrame.Position = Settings.guiPosition
+    end
+
+    UpdateMinimize()
+
+    if flyEnabled then
+        task.delay(0.5, SetupFly)
+    end
+
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = walkSpeed
+    end
+end
+
+--// AUTO-LOAD ON STARTUP
+local loaded = SettingsManager.Load()
+if loaded then
+    ApplySettingsToUI()
 end
 
 --// Button Logic
@@ -709,7 +805,8 @@ HoverButton.MouseButton1Click:Connect(function()
     HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
     HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
     if not hoverEnabled then
-        hoveredRoyalSpider = nil
+        lockedRoyalSpider = nil
+        preHoverCF = nil
         if hoverBP then hoverBP:Destroy(); hoverBP = nil end
         if hoverBG then hoverBG:Destroy(); hoverBG = nil end
     end
@@ -730,6 +827,8 @@ FlyButton.MouseButton1Click:Connect(function()
     if flyEnabled then
         if hoverBP then hoverBP:Destroy(); hoverBP = nil end
         if hoverBG then hoverBG:Destroy(); hoverBG = nil end
+        lockedRoyalSpider = nil
+        preHoverCF = nil
     end
     SettingsManager.AutoSave()
 end)
@@ -794,23 +893,6 @@ MultiBox.FocusLost:Connect(function()
     end
 end)
 
-FreezeButton.MouseButton1Click:Connect(function()
-    frozen = not frozen
-    Settings.frozen = frozen
-    FreezeButton.Text = "Freeze: " .. (frozen and "ON" or "OFF")
-    FreezeButton.BackgroundColor3 = frozen and Color3.fromRGB(0, 100, 255) or Color3.fromRGB(50, 50, 50)
-    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    local hum = hrp and hrp.Parent:FindFirstChildOfClass("Humanoid")
-    if frozen then
-        if hrp then frozenCF = hrp.CFrame end
-        if hum then hum.WalkSpeed = 0; hum.JumpPower = 0 end
-    else
-        if hum then hum.WalkSpeed = walkSpeed; hum.JumpPower = 50 end
-        frozenCF = nil
-    end
-    SettingsManager.AutoSave()
-end)
-
 NoclipButton.MouseButton1Click:Connect(function()
     noclipEnabled = not noclipEnabled
     Settings.noclipEnabled = noclipEnabled
@@ -818,7 +900,6 @@ NoclipButton.MouseButton1Click:Connect(function()
     NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(50, 50, 50)
 
     if not noclipEnabled then
-        -- Restore collision on current character
         local char = LocalPlayer.Character
         if char then
             for _, part in ipairs(char:GetDescendants()) do
@@ -906,83 +987,34 @@ ForestRenderBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Save/Load buttons
+-- Save button (manual save)
 SaveButton.MouseButton1Click:Connect(function()
-    SettingsManager.Save()
-    SaveButton.Text = "✓ Saved!"
+    local success = SettingsManager.Save()
+    SaveButton.Text = success and "✓ Saved!" or "✗ Failed"
     task.delay(1.5, function()
         SaveButton.Text = "💾 Save"
     end)
 end)
 
-LoadButton.MouseButton1Click:Connect(function()
-    if SettingsManager.Load() then
-        SyncLocals()
+-- Clear Settings button
+ClearButton.MouseButton1Click:Connect(function()
+    SettingsManager.Clear()
+    SyncLocals()
+    ApplySettingsToUI()
 
-        ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
-        ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
-        HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
-        HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
-        FlyButton.Text = "Fly: " .. (flyEnabled and "ON" or "OFF")
-        FlyButton.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 200) or Color3.fromRGB(50, 50, 50)
-        FlySpeedBox.Text = tostring(flySpeed)
-        SpeedBox.Text = tostring(attackSpeed)
-        RangeBox.Text = tostring(attackRange)
-        WalkSpeedBox.Text = tostring(walkSpeed)
-        MultiBox.Text = tostring(multiAttacks)
-        FreezeButton.Text = "Freeze: " .. (frozen and "ON" or "OFF")
-        FreezeButton.BackgroundColor3 = frozen and Color3.fromRGB(0, 100, 255) or Color3.fromRGB(50, 50, 50)
-        NoclipButton.Text = "Noclip: " .. (noclipEnabled and "ON" or "OFF")
-        NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(50, 50, 50)
-        AutoTPButton.Text = "Auto-TP: " .. (autoTeleportEnabled and "ON" or "OFF")
-        AutoTPButton.BackgroundColor3 = autoTeleportEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(50, 50, 50)
+    CleanupFly()
+    if hoverBP then hoverBP:Destroy(); hoverBP = nil end
+    if hoverBG then hoverBG:Destroy(); hoverBG = nil end
+    lockedRoyalSpider = nil
+    preHoverCF = nil
 
-        DesertBtn.Text = teleportCFrameDesert and "Desert ✓" or "Desert"
-        DesertBtn.BackgroundColor3 = teleportCFrameDesert and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(194, 178, 128)
-        DesertRenderBtn.BackgroundColor3 = renderDesert and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
-
-        TundraBtn.Text = teleportCFrameTundra and "Tundra ✓" or "Tundra"
-        TundraBtn.BackgroundColor3 = teleportCFrameTundra and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(176, 196, 222)
-        TundraRenderBtn.BackgroundColor3 = renderTundra and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
-
-        FarmBtn.Text = teleportCFrameFarm and "Farm ✓" or "Farm"
-        FarmBtn.BackgroundColor3 = teleportCFrameFarm and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(210, 180, 140)
-        FarmRenderBtn.BackgroundColor3 = renderFarm and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
-
-        SpiderBtn.Text = teleportCFrameSpider and "Spider ✓" or "Spider"
-        SpiderBtn.BackgroundColor3 = teleportCFrameSpider and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(170, 0, 255)
-        SpiderRenderBtn.BackgroundColor3 = renderSpider and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
-
-        ForestRenderBtn.BackgroundColor3 = renderForest and Color3.fromRGB(0, 150, 200) or Color3.fromRGB(80, 80, 80)
-
-        if Settings.guiPosition then
-            MainFrame.Position = Settings.guiPosition
-        end
-        UpdateMinimize()
-
-        -- Re-apply fly if it was saved as enabled
-        if flyEnabled then
-            task.delay(0.5, SetupFly)
-        end
-
-        LoadButton.Text = "✓ Loaded!"
-        task.delay(1.5, function()
-            LoadButton.Text = "🔄 Load"
-        end)
-    else
-        LoadButton.Text = "✗ Failed"
-        task.delay(1.5, function()
-            LoadButton.Text = "🔄 Load"
-        end)
-    end
+    ClearButton.Text = "✓ Cleared!"
+    task.delay(1.5, function()
+        ClearButton.Text = "🗑️ Clear"
+    end)
 end)
 
 --// Helper Functions
-local function getHumanoidRootPart()
-    local char = LocalPlayer.Character
-    return char and char:FindFirstChild("HumanoidRootPart")
-end
-
 local function countNearbyGuardians(root, radius)
     local count = 0
     for _, m in ipairs(workspace:GetDescendants()) do
@@ -1031,16 +1063,6 @@ RunService.Stepped:Connect(function()
     end
 end)
 
---// Freeze Loop (Hard lock CFrame)
-RunService.RenderStepped:Connect(function()
-    if frozen and frozenCF then
-        local hrp = getHumanoidRootPart()
-        if hrp then
-            hrp.CFrame = frozenCF
-        end
-    end
-end)
-
 --// Fly Control Loop
 local flyControl = {W = false, A = false, S = false, D = false, Space = false, LeftShift = false}
 
@@ -1081,51 +1103,61 @@ RunService.RenderStepped:Connect(function()
     if moveDir.Magnitude > 0 then
         moveDir = moveDir.Unit
         flyBV.Velocity = moveDir * flySpeed
-        flyBG.CFrame = CFrame.new(hrp.Position, hrp.Position + cam.CFrame.LookVector)
+        flyBG.CFrame = CFrame.new(hrp.Position, hrp.Position + cam.CFrame.LookVector * Vector3.new(1, 0, 1))
     else
         flyBV.Velocity = Vector3.new(0, 0, 0)
         flyBG.CFrame = hrp.CFrame
     end
 end)
 
---// Hover Loop (Smooth BodyPosition)
+--// Hover Loop (Smooth BodyPosition - UNDERGROUND + lock target)
 task.spawn(function()
     while true do
         task.wait(0.1)
-        if not hoverEnabled or flyEnabled or frozen then
+        if not hoverEnabled or flyEnabled then
+            -- Return to original position when hover turns off or target dies
+            if preHoverCF and not hoverEnabled then
+                local hrp = getHumanoidRootPart()
+                if hrp then
+                    hrp.Parent:PivotTo(preHoverCF)
+                end
+                preHoverCF = nil
+            end
+            lockedRoyalSpider = nil
             if hoverBP then hoverBP:Destroy(); hoverBP = nil end
             if hoverBG then hoverBG:Destroy(); hoverBG = nil end
-            hoveredRoyalSpider = nil
             continue
         end
 
         local hrp = getHumanoidRootPart()
         if not hrp then
+            lockedRoyalSpider = nil
+            preHoverCF = nil
             if hoverBP then hoverBP:Destroy(); hoverBP = nil end
             if hoverBG then hoverBG:Destroy(); hoverBG = nil end
-            hoveredRoyalSpider = nil
             continue
         end
 
-        local target = nil
-        for _, obj in pairs(workspace:GetDescendants()) do
-            if obj:IsA("Model") and obj.Name == "royalSpiderModel" then
-                local mobHrp = obj:FindFirstChild("HumanoidRootPart")
-                if mobHrp then
-                    local dist = (mobHrp.Position - hrp.Position).Magnitude
-                    if dist < attackRange then
-                        target = mobHrp
-                        hoveredRoyalSpider = obj
-                        break
-                    end
+        -- If we have a locked target, check if it still exists
+        if lockedRoyalSpider then
+            local mobHrp = lockedRoyalSpider:FindFirstChild("HumanoidRootPart")
+            if not mobHrp or not lockedRoyalSpider:IsDescendantOf(workspace) then
+                -- Target died or despawned, return to original position
+                lockedRoyalSpider = nil
+                if hoverBP then hoverBP:Destroy(); hoverBP = nil end
+                if hoverBG then hoverBG:Destroy(); hoverBG = nil end
+                if preHoverCF then
+                    hrp.Parent:PivotTo(preHoverCF)
+                    preHoverCF = nil
                 end
+                continue
             end
-        end
 
-        if target then
+            -- Continue hovering the locked target (underground)
             if not hoverBP or hoverBP.Parent ~= hrp then
                 if hoverBP then hoverBP:Destroy() end
                 hoverBP = Instance.new("BodyPosition")
+                hoverBP.Name = "SpiderHoverBP"
                 hoverBP.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
                 hoverBP.P = 10000
                 hoverBP.D = 500
@@ -1134,14 +1166,62 @@ task.spawn(function()
             if not hoverBG or hoverBG.Parent ~= hrp then
                 if hoverBG then hoverBG:Destroy() end
                 hoverBG = Instance.new("BodyGyro")
+                hoverBG.Name = "SpiderHoverBG"
                 hoverBG.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
                 hoverBG.P = 10000
                 hoverBG.Parent = hrp
             end
-            hoverBP.Position = target.Position + Vector3.new(0, 8, 0)
-            hoverBG.CFrame = CFrame.new(hrp.Position, target.Position)
+            -- Underground: 8 studs BELOW the target
+            hoverBP.Position = mobHrp.Position - Vector3.new(0, 8, 0)
+            hoverBG.CFrame = CFrame.new(hrp.Position, mobHrp.Position)
+            continue
+        end
+
+        -- No locked target, search for one
+        local target = nil
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("Model") and obj.Name == "royalSpiderModel" then
+                local mobHrp = obj:FindFirstChild("HumanoidRootPart")
+                if mobHrp then
+                    local dist = (mobHrp.Position - hrp.Position).Magnitude
+                    if dist < attackRange then
+                        target = obj
+                        break
+                    end
+                end
+            end
+        end
+
+        if target then
+            -- Lock onto this target and save pre-hover position
+            lockedRoyalSpider = target
+            preHoverCF = hrp.CFrame
+
+            if not hoverBP or hoverBP.Parent ~= hrp then
+                if hoverBP then hoverBP:Destroy() end
+                hoverBP = Instance.new("BodyPosition")
+                hoverBP.Name = "SpiderHoverBP"
+                hoverBP.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                hoverBP.P = 10000
+                hoverBP.D = 500
+                hoverBP.Parent = hrp
+            end
+            if not hoverBG or hoverBG.Parent ~= hrp then
+                if hoverBG then hoverBG:Destroy() end
+                hoverBG = Instance.new("BodyGyro")
+                hoverBG.Name = "SpiderHoverBG"
+                hoverBG.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+                hoverBG.P = 10000
+                hoverBG.Parent = hrp
+            end
+            -- Underground: 8 studs BELOW the target
+            local mobHrp = target:FindFirstChild("HumanoidRootPart")
+            if mobHrp then
+                hoverBP.Position = mobHrp.Position - Vector3.new(0, 8, 0)
+                hoverBG.CFrame = CFrame.new(hrp.Position, mobHrp.Position)
+            end
         else
-            hoveredRoyalSpider = nil
+            lockedRoyalSpider = nil
             if hoverBP then hoverBP:Destroy(); hoverBP = nil end
             if hoverBG then hoverBG:Destroy(); hoverBG = nil end
         end
@@ -1261,11 +1341,11 @@ task.spawn(function()
                 local activeTargets = currentFarmMode and farmMobs or targetMobs
                 local isFarm = currentFarmMode
 
-                -- If hover is enabled and we're hovering a royal spider, prioritize ONLY that one
-                if hoverEnabled and hoveredRoyalSpider and hoveredRoyalSpider:FindFirstChild("HumanoidRootPart") then
-                    local dist = (hoveredRoyalSpider.HumanoidRootPart.Position - hrp.Position).Magnitude
+                -- If hover is enabled and we have a locked royal spider, prioritize ONLY that one
+                if hoverEnabled and lockedRoyalSpider and lockedRoyalSpider:FindFirstChild("HumanoidRootPart") then
+                    local dist = (lockedRoyalSpider.HumanoidRootPart.Position - hrp.Position).Magnitude
                     if dist < attackRange then
-                        royalTarget = hoveredRoyalSpider
+                        royalTarget = lockedRoyalSpider
                     end
                 end
 
@@ -1327,7 +1407,7 @@ task.spawn(function()
                     local now = tick()
                     StatusLabel.Text = "Target: None"
                     StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
-                    if now - lastAutoAttack >= 1 then -- 1s for ALL modes
+                    if now - lastAutoAttack >= 1 then
                         lastAutoAttack = now
                         Event:FireServer("use", "wand", "place", hrp.Position + hrp.CFrame.LookVector * 10)
                     end
@@ -1351,7 +1431,7 @@ end)
 LocalPlayer.CharacterAdded:Connect(function(char)
     task.wait(1)
     local hum = char:WaitForChild("Humanoid")
-    if hum and not frozen then
+    if hum then
         hum.WalkSpeed = walkSpeed
     end
     -- Re-apply fly if active after respawn
@@ -1361,4 +1441,6 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     -- Clean up hover constraints on respawn
     if hoverBP then hoverBP = nil end
     if hoverBG then hoverBG = nil end
+    lockedRoyalSpider = nil
+    preHoverCF = nil
 end)
