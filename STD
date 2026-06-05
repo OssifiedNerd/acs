@@ -2,321 +2,801 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-
+local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Event = ReplicatedStorage:WaitForChild("Event")
 
---// Configuration
-local Config = {
-    Delay = 0.01, -- 10ms between teleports
-    AutoRestart = true,
-    AntiSpamMode = true, -- Tries to randomize calls slightly
-    Waypoints = {
-        "Cube Forest",
-        "Spawn",
-        "Cube Town",
-        "Flowey Fields",
-        "Mushey Hills",
-        "Cherry Falls",
-        "Glimmering Tundra",
-        "Desert of Shadows", -- Fixed spelling
-        "Coconut Bay"
-    }
+--// Settings System
+local Settings = {
+    wandEnabled = false,
+    attackSpeed = 0.3,
+    attackRange = 100,
+    walkSpeed = 50,
+    multiAttacks = 3,
+    autoTeleportEnabled = true,
+    nearbyRadius = 150,
+    returnDelay = 5,
+    noclipEnabled = false,
+    frozen = false,
+    teleportCFrameBase = nil,
+    teleportCFrameDesert = nil,
+    guiPosition = nil -- Will store UDim2 as table
 }
 
---// State
-local isRunning = false
-local currentIndex = 1
-local thread = nil
+local SETTINGS_FILE = "SpiderToolSettings.json"
+local SAVE_COOLDOWN = 2 -- seconds between saves
+local lastSaveTime = 0
 
---// GUI Creation
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "WaypointAuto"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.Parent = PlayerGui
+--// Settings Manager
+local SettingsManager = {}
 
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 220, 0, 140)
-MainFrame.Position = UDim2.new(0.5, -110, 0.1, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-MainFrame.BorderSizePixel = 0
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
+function SettingsManager.SerializeCFrame(cf)
+    if not cf then return nil end
+    return {
+        pos = {cf.Position.X, cf.Position.Y, cf.Position.Z},
+        rot = {cf.LookVector.X, cf.LookVector.Y, cf.LookVector.Z}
+    }
+end
 
-Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
+function SettingsManager.DeserializeCFrame(data)
+    if not data or not data.pos then return nil end
+    local pos = Vector3.new(unpack(data.pos))
+    local look = Vector3.new(unpack(data.rot))
+    return CFrame.new(pos, pos + look)
+end
 
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, 0, 0, 32)
-Title.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-Title.BorderSizePixel = 0
-Title.Text = "Waypoint Auto (Anti-Cooldown)"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.TextSize = 13
-Title.Font = Enum.Font.GothamBold
-Title.Parent = MainFrame
+function SettingsManager.SerializeUDim2(udim2)
+    if not udim2 then return nil end
+    return {
+        X = {udim2.X.Scale, udim2.X.Offset},
+        Y = {udim2.Y.Scale, udim2.Y.Offset}
+    }
+end
 
-Instance.new("UICorner", Title).CornerRadius = UDim.new(0, 8)
-local TitleFix = Instance.new("Frame", Title)
-TitleFix.Size = UDim2.new(1, 0, 0, 10)
-TitleFix.Position = UDim2.new(0, 0, 1, -10)
-TitleFix.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-TitleFix.BorderSizePixel = 0
+function SettingsManager.DeserializeUDim2(data)
+    if not data then return nil end
+    return UDim2.new(data.X[1], data.X[2], data.Y[1], data.Y[2])
+end
 
-local ToggleButton = Instance.new("TextButton")
-ToggleButton.Size = UDim2.new(0, 190, 0, 42)
-ToggleButton.Position = UDim2.new(0.5, -95, 0, 48)
-ToggleButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
-ToggleButton.BorderSizePixel = 0
-ToggleButton.Text = "OFF"
-ToggleButton.TextColor3 = Color3.fromRGB(255, 70, 70)
-ToggleButton.TextSize = 16
-ToggleButton.Font = Enum.Font.GothamBold
-ToggleButton.AutoButtonColor = false
-ToggleButton.Parent = MainFrame
-
-Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 6)
-
-local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, 0, 0, 20)
-StatusLabel.Position = UDim2.new(0, 0, 0, 98)
-StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Ready - Attempting Bypass..."
-StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-StatusLabel.TextSize = 11
-StatusLabel.Font = Enum.Font.Gotham
-StatusLabel.Parent = MainFrame
-
-local InfoLabel = Instance.new("TextLabel")
-InfoLabel.Size = UDim2.new(1, 0, 0, 16)
-InfoLabel.Position = UDim2.new(0, 0, 0, 118)
-InfoLabel.BackgroundTransparency = 1
-InfoLabel.Text = "v2.0 | Cooldown Bypass Active"
-InfoLabel.TextColor3 = Color3.fromRGB(100, 100, 100)
-InfoLabel.TextSize = 10
-InfoLabel.Font = Enum.Font.Gotham
-InfoLabel.Parent = MainFrame
-
---// Bypass Methods
-
--- Method 1: Hook InvokeServer to bypass client-side wrappers
-local TeleportRemote = ReplicatedStorage:WaitForChild("ClientRemotes"):WaitForChild("Map"):WaitForChild("TeleportToWaypoint")
-
-local oldInvoke
-if hookfunction then
-    oldInvoke = hookfunction(TeleportRemote.InvokeServer, function(self, ...)
-        if self == TeleportRemote then
-            -- Call original directly, bypassing any middleware
-            return oldInvoke(self, ...)
+function SettingsManager.Load()
+    local success, result = pcall(function()
+        if not isfile(SETTINGS_FILE) then return nil end
+        return HttpService:JSONDecode(readfile(SETTINGS_FILE))
+    end)
+    
+    if success and result then
+        -- Validate and merge
+        for key, default in pairs(Settings) do
+            if result[key] ~= nil then
+                if key == "teleportCFrameBase" or key == "teleportCFrameDesert" then
+                    Settings[key] = SettingsManager.DeserializeCFrame(result[key])
+                elseif key == "guiPosition" then
+                    Settings[key] = SettingsManager.DeserializeUDim2(result[key])
+                else
+                    Settings[key] = result[key]
+                end
+            end
         end
-        return oldInvoke(self, ...)
+        return true
+    end
+    return false
+end
+
+function SettingsManager.Save()
+    local now = tick()
+    if now - lastSaveTime < SAVE_COOLDOWN then return end
+    lastSaveTime = now
+    
+    local dataToSave = {}
+    for key, value in pairs(Settings) do
+        if key == "teleportCFrameBase" or key == "teleportCFrameDesert" then
+            dataToSave[key] = SettingsManager.SerializeCFrame(value)
+        elseif key == "guiPosition" then
+            dataToSave[key] = SettingsManager.SerializeUDim2(value)
+        else
+            dataToSave[key] = value
+        end
+    end
+    
+    pcall(function()
+        writefile(SETTINGS_FILE, HttpService:JSONEncode(dataToSave))
     end)
 end
 
--- Method 2: Find and nuke cooldown values in common script locations
-local function nukeCooldowns()
-    local count = 0
-    for _, obj in pairs(game:GetDescendants()) do
-        if obj:IsA("ModuleScript") or obj:IsA("LocalScript") then
-            -- Try to require and check for cooldown tables
-            local success, result = pcall(function()
-                local module = require(obj)
-                if type(module) == "table" then
-                    for k, v in pairs(module) do
-                        if type(k) == "string" and k:lower():match("cooldown") or k:lower():match("debounce") or k:lower():match("spam") then
-                            if type(v) == "number" then
-                                module[k] = 0
-                                count = count + 1
-                            elseif type(v) == "boolean" then
-                                module[k] = false
-                                count = count + 1
-                            end
-                        end
-                    end
+-- Debounced auto-save
+local autoSaveConnection
+function SettingsManager.AutoSave()
+    if autoSaveConnection then autoSaveConnection:Disconnect() end
+    autoSaveConnection = task.delay(SAVE_COOLDOWN, SettingsManager.Save)
+end
+
+-- Load settings on startup
+SettingsManager.Load()
+
+--// Variables (synced with Settings)
+local wandEnabled = Settings.wandEnabled
+local attackSpeed = Settings.attackSpeed
+local attackRange = Settings.attackRange
+local walkSpeed = Settings.walkSpeed
+local multiAttacks = Settings.multiAttacks
+local lastAutoAttack = 0
+
+local autoTeleportEnabled = Settings.autoTeleportEnabled
+local nearbyRadius = Settings.nearbyRadius
+local returnDelay = Settings.returnDelay
+local isTeleporting = false
+local teleportCFrameBase = Settings.teleportCFrameBase
+local teleportCFrameDesert = Settings.teleportCFrameDesert
+local crystalCount = 0
+local frozen = Settings.frozen
+local noclipEnabled = Settings.noclipEnabled
+
+-- Spider vars
+local spiderState = "🟣"
+local spiderDisappeared = false
+
+-- Target mobs (priority)
+local targetMobs = {
+    ["royalSpiderModel"] = 1,
+    ["sandManModel"] = 2,
+    ["spiderModel"] = 3,
+    ["crystalGuardianModel"] = 4,
+    ["sandGeneralModel"] = 5,
+    ["Sheds"] = 6,
+    ["desertBossModel"] = 7
+}
+
+-- Colors for status label
+local mobColors = {
+    ["royalSpiderModel"] = Color3.fromRGB(255, 0, 0),
+    ["spiderModel"] = Color3.fromRGB(200, 100, 100),
+    ["crystalGuardianModel"] = Color3.fromRGB(0, 255, 0),
+    ["crystalArcherModel"] = Color3.fromRGB(0, 200, 200),
+    ["Sheds"] = Color3.fromRGB(200, 200, 100),
+    ["spiderDen8183Sheds"] = Color3.fromRGB(150, 50, 255)
+}
+
+local ignoreList = {"SwordTroop", "ArcherTroop", "WizardTroop", "Mystical Bag"}
+
+--// GUI Setup
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "SpiderGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 240, 0, 0) -- Slightly wider for new buttons
+MainFrame.Position = Settings.guiPosition or UDim2.new(0.5, -120, 0.5, -180)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+MainFrame.AutomaticSize = Enum.AutomaticSize.Y
+
+local UIListLayout = Instance.new("UIListLayout", MainFrame)
+UIListLayout.Padding = UDim.new(0, 6)
+UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+Instance.new("UIPadding", MainFrame).PaddingTop = UDim.new(0, 10)
+
+-- Title Label
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(0.9, 0, 0, 22)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "🕷️ Spider Tool v2.0"
+TitleLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 16
+TitleLabel.Parent = MainFrame
+
+-- Wand Toggle Button
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Size = UDim2.new(0.9, 0, 0, 30)
+ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
+ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
+ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.TextSize = 14
+ToggleButton.Parent = MainFrame
+Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 6)
+
+-- Input Row (Speed + Range + WalkSpeed)
+local InputRow = Instance.new("Frame")
+InputRow.Size = UDim2.new(0.9, 0, 0, 30)
+InputRow.BackgroundTransparency = 1
+InputRow.Parent = MainFrame
+local InputLayout = Instance.new("UIListLayout", InputRow)
+InputLayout.FillDirection = Enum.FillDirection.Horizontal
+InputLayout.Padding = UDim.new(0, 5)
+
+local SpeedBox = Instance.new("TextBox")
+SpeedBox.Size = UDim2.new(0.33, -2, 1, 0)
+SpeedBox.Text = tostring(attackSpeed)
+SpeedBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+SpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+SpeedBox.Font = Enum.Font.Gotham
+SpeedBox.TextSize = 14
+SpeedBox.PlaceholderText = "Speed"
+SpeedBox.Parent = InputRow
+Instance.new("UICorner", SpeedBox).CornerRadius = UDim.new(0, 6)
+
+local RangeBox = Instance.new("TextBox")
+RangeBox.Size = UDim2.new(0.33, -2, 1, 0)
+RangeBox.Text = tostring(attackRange)
+RangeBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+RangeBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+RangeBox.Font = Enum.Font.Gotham
+RangeBox.TextSize = 14
+RangeBox.PlaceholderText = "Range"
+RangeBox.Parent = InputRow
+Instance.new("UICorner", RangeBox).CornerRadius = UDim.new(0, 6)
+
+local WalkSpeedBox = Instance.new("TextBox")
+WalkSpeedBox.Size = UDim2.new(0.33, -2, 1, 0)
+WalkSpeedBox.Text = tostring(walkSpeed)
+WalkSpeedBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+WalkSpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+WalkSpeedBox.Font = Enum.Font.Gotham
+WalkSpeedBox.TextSize = 14
+WalkSpeedBox.PlaceholderText = "Walk"
+WalkSpeedBox.Parent = InputRow
+Instance.new("UICorner", WalkSpeedBox).CornerRadius = UDim.new(0, 6)
+
+-- Multi-Attack Row
+local MultiRow = Instance.new("Frame")
+MultiRow.Size = UDim2.new(0.9, 0, 0, 30)
+MultiRow.BackgroundTransparency = 1
+MultiRow.Parent = MainFrame
+local MultiLayout = Instance.new("UIListLayout", MultiRow)
+MultiLayout.FillDirection = Enum.FillDirection.Horizontal
+MultiLayout.Padding = UDim.new(0, 5)
+
+local MultiLabel = Instance.new("TextLabel")
+MultiLabel.Size = UDim2.new(0.5, -2, 1, 0)
+MultiLabel.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+MultiLabel.Text = "Multi-Attacks:"
+MultiLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+MultiLabel.Font = Enum.Font.Gotham
+MultiLabel.TextSize = 14
+MultiLabel.Parent = MultiRow
+Instance.new("UICorner", MultiLabel).CornerRadius = UDim.new(0, 6)
+
+local MultiBox = Instance.new("TextBox")
+MultiBox.Size = UDim2.new(0.5, -2, 1, 0)
+MultiBox.Text = tostring(multiAttacks)
+MultiBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+MultiBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+MultiBox.Font = Enum.Font.Gotham
+MultiBox.TextSize = 14
+MultiBox.PlaceholderText = "Count"
+MultiBox.Parent = MultiRow
+Instance.new("UICorner", MultiBox).CornerRadius = UDim.new(0, 6)
+
+-- Status Labels
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(0.9, 0, 0, 20)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Target: None"
+StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextSize = 14
+StatusLabel.Parent = MainFrame
+
+local SpiderStatusLabel = Instance.new("TextLabel")
+SpiderStatusLabel.Size = UDim2.new(0.9, 0, 0, 20)
+SpiderStatusLabel.BackgroundTransparency = 1
+SpiderStatusLabel.Text = "🕷️ 🟣"
+SpiderStatusLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+SpiderStatusLabel.Font = Enum.Font.Gotham
+SpiderStatusLabel.TextSize = 16
+SpiderStatusLabel.Parent = MainFrame
+
+-- Countdown Label
+local CountdownLabel = Instance.new("TextLabel", MainFrame)
+CountdownLabel.Size = UDim2.new(0, 120, 0, 20)
+CountdownLabel.BackgroundTransparency = 1
+CountdownLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+CountdownLabel.TextScaled = true
+CountdownLabel.Text = "Timer: 0s"
+CountdownLabel.Font = Enum.Font.GothamBold
+
+-- Teleport Buttons (Base & Desert)
+local TPFrame = Instance.new("Frame")
+TPFrame.Size = UDim2.new(0.9, 0, 0, 30)
+TPFrame.BackgroundTransparency = 1
+TPFrame.Parent = MainFrame
+local TPLayout = Instance.new("UIListLayout", TPFrame)
+TPLayout.FillDirection = Enum.FillDirection.Horizontal
+TPLayout.Padding = UDim.new(0, 5)
+
+local BaseButton = Instance.new("TextButton")
+BaseButton.Size = UDim2.new(0.48, 0, 1, 0)
+BaseButton.Text = teleportCFrameBase and "Base ✓" or "Base"
+BaseButton.BackgroundColor3 = teleportCFrameBase and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(100, 100, 100)
+BaseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+BaseButton.Font = Enum.Font.Gotham
+BaseButton.TextSize = 14
+BaseButton.Parent = TPFrame
+Instance.new("UICorner", BaseButton).CornerRadius = UDim.new(0, 6)
+
+local DesertButton = Instance.new("TextButton")
+DesertButton.Size = UDim2.new(0.48, 0, 1, 0)
+DesertButton.Text = teleportCFrameDesert and "Desert ✓" or "Desert"
+DesertButton.BackgroundColor3 = teleportCFrameDesert and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(100, 100, 100)
+DesertButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+DesertButton.Font = Enum.Font.Gotham
+DesertButton.TextSize = 14
+DesertButton.Parent = TPFrame
+Instance.new("UICorner", DesertButton).CornerRadius = UDim.new(0, 6)
+
+-- Settings Buttons Row
+local SettingsRow = Instance.new("Frame")
+SettingsRow.Size = UDim2.new(0.9, 0, 0, 30)
+SettingsRow.BackgroundTransparency = 1
+SettingsRow.Parent = MainFrame
+local SettingsLayout = Instance.new("UIListLayout", SettingsRow)
+SettingsLayout.FillDirection = Enum.FillDirection.Horizontal
+SettingsLayout.Padding = UDim.new(0, 5)
+
+local SaveButton = Instance.new("TextButton")
+SaveButton.Size = UDim2.new(0.48, 0, 1, 0)
+SaveButton.Text = "💾 Save"
+SaveButton.BackgroundColor3 = Color3.fromRGB(0, 100, 150)
+SaveButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+SaveButton.Font = Enum.Font.GothamBold
+SaveButton.TextSize = 14
+SaveButton.Parent = SettingsRow
+Instance.new("UICorner", SaveButton).CornerRadius = UDim.new(0, 6)
+
+local LoadButton = Instance.new("TextButton")
+LoadButton.Size = UDim2.new(0.48, 0, 1, 0)
+LoadButton.Text = "🔄 Load"
+LoadButton.BackgroundColor3 = Color3.fromRGB(100, 100, 0)
+LoadButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+LoadButton.Font = Enum.Font.GothamBold
+LoadButton.TextSize = 14
+LoadButton.Parent = SettingsRow
+Instance.new("UICorner", LoadButton).CornerRadius = UDim.new(0, 6)
+
+-- Freeze Button
+local FreezeButton = Instance.new("TextButton")
+FreezeButton.Size = UDim2.new(0.9, 0, 0, 25)
+FreezeButton.Text = "Freeze: " .. (frozen and "ON" or "OFF")
+FreezeButton.BackgroundColor3 = frozen and Color3.fromRGB(0, 100, 255) or Color3.fromRGB(50, 50, 50)
+FreezeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+FreezeButton.Font = Enum.Font.GothamBold
+FreezeButton.TextSize = 14
+FreezeButton.Parent = MainFrame
+Instance.new("UICorner", FreezeButton).CornerRadius = UDim.new(0, 6)
+
+-- Noclip Button
+local NoclipButton = Instance.new("TextButton")
+NoclipButton.Size = UDim2.new(0.9, 0, 0, 25)
+NoclipButton.Text = "Noclip: " .. (noclipEnabled and "ON" or "OFF")
+NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(50, 50, 50)
+NoclipButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+NoclipButton.Font = Enum.Font.GothamBold
+NoclipButton.TextSize = 14
+NoclipButton.Parent = MainFrame
+Instance.new("UICorner", NoclipButton).CornerRadius = UDim.new(0, 6)
+
+-- Auto-Teleport Toggle
+local AutoTPButton = Instance.new("TextButton")
+AutoTPButton.Size = UDim2.new(0.9, 0, 0, 25)
+AutoTPButton.Text = "Auto-TP: " .. (autoTeleportEnabled and "ON" or "OFF")
+AutoTPButton.BackgroundColor3 = autoTeleportEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(50, 50, 50)
+AutoTPButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoTPButton.Font = Enum.Font.GothamBold
+AutoTPButton.TextSize = 14
+AutoTPButton.Parent = MainFrame
+Instance.new("UICorner", AutoTPButton).CornerRadius = UDim.new(0, 6)
+
+-- Exit Button
+local ExitButton = Instance.new("TextButton")
+ExitButton.Size = UDim2.new(0.9, 0, 0, 25)
+ExitButton.Text = "Exit Script"
+ExitButton.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
+ExitButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ExitButton.Font = Enum.Font.GothamBold
+ExitButton.TextSize = 14
+ExitButton.Parent = MainFrame
+Instance.new("UICorner", ExitButton).CornerRadius = UDim.new(0, 6)
+
+--// Draggable GUI (with position saving)
+do
+    local dragging, dragInput, mousePos, framePos
+    MainFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            mousePos = input.Position
+            framePos = MainFrame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then 
+                    dragging = false 
+                    -- Save position when drag ends
+                    Settings.guiPosition = MainFrame.Position
+                    SettingsManager.AutoSave()
                 end
             end)
         end
+    end)
+    MainFrame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then dragInput = input end
+    end)
+    RunService.RenderStepped:Connect(function()
+        if dragging and dragInput then
+            local delta = dragInput.Position - mousePos
+            MainFrame.Position = UDim2.new(framePos.X.Scale, framePos.X.Offset + delta.X,
+                                           framePos.Y.Scale, framePos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+--// Button Logic
+ToggleButton.MouseButton1Click:Connect(function()
+    wandEnabled = not wandEnabled
+    Settings.wandEnabled = wandEnabled
+    ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
+    ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
+    SettingsManager.AutoSave()
+end)
+
+SpeedBox.FocusLost:Connect(function()
+    local val = tonumber(SpeedBox.Text)
+    if val and val >= 0.05 then 
+        attackSpeed = val 
+        Settings.attackSpeed = val
+        SettingsManager.AutoSave()
+    else
+        SpeedBox.Text = tostring(attackSpeed)
+    end
+end)
+
+RangeBox.FocusLost:Connect(function()
+    local val = tonumber(RangeBox.Text)
+    if val and val > 0 then 
+        attackRange = val 
+        Settings.attackRange = val
+        SettingsManager.AutoSave()
+    else
+        RangeBox.Text = tostring(attackRange)
+    end
+end)
+
+WalkSpeedBox.FocusLost:Connect(function(enterPressed)
+    if not enterPressed then return end
+    local val = tonumber(WalkSpeedBox.Text)
+    if val and val > 0 then
+        walkSpeed = val
+        Settings.walkSpeed = val
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = walkSpeed end
+        SettingsManager.AutoSave()
+    else
+        WalkSpeedBox.Text = tostring(walkSpeed)
+    end
+end)
+
+MultiBox.FocusLost:Connect(function()
+    local val = tonumber(MultiBox.Text)
+    if val and val >= 1 and val <= 20 then 
+        multiAttacks = math.floor(val)
+        Settings.multiAttacks = multiAttacks
+        MultiBox.Text = tostring(multiAttacks)
+        SettingsManager.AutoSave()
+    else
+        MultiBox.Text = tostring(multiAttacks)
+    end
+end)
+
+FreezeButton.MouseButton1Click:Connect(function()
+    frozen = not frozen
+    Settings.frozen = frozen
+    FreezeButton.Text = "Freeze: " .. (frozen and "ON" or "OFF")
+    FreezeButton.BackgroundColor3 = frozen and Color3.fromRGB(0, 100, 255) or Color3.fromRGB(50, 50, 50)
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local hum = hrp and hrp.Parent:FindFirstChildOfClass("Humanoid")
+    if hum then hum.WalkSpeed = frozen and 0 or walkSpeed; hum.JumpPower = frozen and 0 or 50 end
+    SettingsManager.AutoSave()
+end)
+
+NoclipButton.MouseButton1Click:Connect(function()
+    noclipEnabled = not noclipEnabled
+    Settings.noclipEnabled = noclipEnabled
+    NoclipButton.Text = "Noclip: " .. (noclipEnabled and "ON" or "OFF")
+    NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(50, 50, 50)
+    SettingsManager.AutoSave()
+end)
+
+AutoTPButton.MouseButton1Click:Connect(function()
+    autoTeleportEnabled = not autoTeleportEnabled
+    Settings.autoTeleportEnabled = autoTeleportEnabled
+    AutoTPButton.Text = "Auto-TP: " .. (autoTeleportEnabled and "ON" or "OFF")
+    AutoTPButton.BackgroundColor3 = autoTeleportEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(50, 50, 50)
+    SettingsManager.AutoSave()
+end)
+
+BaseButton.MouseButton1Click:Connect(function()
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        teleportCFrameBase = hrp.CFrame
+        Settings.teleportCFrameBase = teleportCFrameBase
+        BaseButton.Text = "Base ✓"
+        BaseButton.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+        SettingsManager.AutoSave()
+    end
+end)
+
+DesertButton.MouseButton1Click:Connect(function()
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        teleportCFrameDesert = hrp.CFrame
+        Settings.teleportCFrameDesert = teleportCFrameDesert
+        DesertButton.Text = "Desert ✓"
+        DesertButton.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+        SettingsManager.AutoSave()
+    end
+end)
+
+-- Save/Load buttons
+SaveButton.MouseButton1Click:Connect(function()
+    SettingsManager.Save()
+    SaveButton.Text = "✓ Saved!"
+    task.delay(1.5, function()
+        SaveButton.Text = "💾 Save"
+    end)
+end)
+
+LoadButton.MouseButton1Click:Connect(function()
+    if SettingsManager.Load() then
+        -- Apply loaded settings
+        wandEnabled = Settings.wandEnabled
+        attackSpeed = Settings.attackSpeed
+        attackRange = Settings.attackRange
+        walkSpeed = Settings.walkSpeed
+        multiAttacks = Settings.multiAttacks
+        autoTeleportEnabled = Settings.autoTeleportEnabled
+        nearbyRadius = Settings.nearbyRadius
+        returnDelay = Settings.returnDelay
+        frozen = Settings.frozen
+        noclipEnabled = Settings.noclipEnabled
+        teleportCFrameBase = Settings.teleportCFrameBase
+        teleportCFrameDesert = Settings.teleportCFrameDesert
         
-        -- Check for NumberValue/IntValue named cooldown
-        if obj:IsA("NumberValue") or obj:IsA("IntValue") then
-            if obj.Name:lower():match("cooldown") or obj.Name:lower():match("delay") then
-                obj.Value = 0
-                count = count + 1
+        -- Update UI
+        ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
+        ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
+        SpeedBox.Text = tostring(attackSpeed)
+        RangeBox.Text = tostring(attackRange)
+        WalkSpeedBox.Text = tostring(walkSpeed)
+        MultiBox.Text = tostring(multiAttacks)
+        FreezeButton.Text = "Freeze: " .. (frozen and "ON" or "OFF")
+        FreezeButton.BackgroundColor3 = frozen and Color3.fromRGB(0, 100, 255) or Color3.fromRGB(50, 50, 50)
+        NoclipButton.Text = "Noclip: " .. (noclipEnabled and "ON" or "OFF")
+        NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(50, 50, 50)
+        AutoTPButton.Text = "Auto-TP: " .. (autoTeleportEnabled and "ON" or "OFF")
+        AutoTPButton.BackgroundColor3 = autoTeleportEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(50, 50, 50)
+        BaseButton.Text = teleportCFrameBase and "Base ✓" or "Base"
+        BaseButton.BackgroundColor3 = teleportCFrameBase and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(100, 100, 100)
+        DesertButton.Text = teleportCFrameDesert and "Desert ✓" or "Desert"
+        DesertButton.BackgroundColor3 = teleportCFrameDesert and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(100, 100, 100)
+        
+        if Settings.guiPosition then
+            MainFrame.Position = Settings.guiPosition
+        end
+        
+        LoadButton.Text = "✓ Loaded!"
+        task.delay(1.5, function()
+            LoadButton.Text = "🔄 Load"
+        end)
+    else
+        LoadButton.Text = "✗ Failed"
+        task.delay(1.5, function()
+            LoadButton.Text = "🔄 Load"
+        end)
+    end
+end)
+
+ExitButton.MouseButton1Click:Connect(function()
+    Settings.guiPosition = MainFrame.Position
+    SettingsManager.Save()
+    ScreenGui:Destroy()
+    script:Destroy()
+end)
+
+--// Helper Functions
+local function getHumanoidRootPart()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function countNearbyGuardians(root, radius)
+    local count = 0
+    for _, m in ipairs(workspace:GetDescendants()) do
+        if m:IsA("Model") and m.Name == "crystalGuardianModel" then
+            local hrp = m:FindFirstChild("HumanoidRootPart")
+            if hrp and (hrp.Position - root.Position).Magnitude <= radius then
+                count += 1
+                if count >= 5 then break end
             end
         end
     end
     return count
 end
 
--- Method 3: Hook FireServer/InvokeServer globally to bypass rate limiters
-if hookfunction and getrawmetatable then
-    local mt = getrawmetatable(game)
-    local oldNamecall = mt.__namecall
-    setreadonly(mt, false)
-    
-    mt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        if method == "InvokeServer" and self == TeleportRemote then
-            -- Force through by calling raw
-            return oldInvoke(self, ...)
+local function countNearbySpiders(root, radius)
+    for _, m in ipairs(workspace:GetDescendants()) do
+        if m:IsA("Model") and m.Name == "spiderModel" then
+            local hrp = m:FindFirstChild("HumanoidRootPart")
+            if hrp and (hrp.Position - root.Position).Magnitude <= radius then return true end
         end
-        return oldNamecall(self, ...)
-    end)
-    
-    setreadonly(mt, true)
+    end
+    return false
 end
 
--- Method 4: Try to find the specific map teleport module and patch it
-local function patchTeleportModule()
-    -- Common paths where teleport logic might be
-    local paths = {
-        ReplicatedStorage:FindFirstChild("ClientModules"),
-        ReplicatedStorage:FindFirstChild("Modules"),
-        LocalPlayer:FindFirstChild("PlayerScripts"),
-        game:GetService("StarterPlayer"):FindFirstChild("StarterPlayerScripts")
-    }
-    
-    for _, path in pairs(paths) do
-        if path then
-            for _, module in pairs(path:GetDescendants()) do
-                if module:IsA("ModuleScript") and (module.Name:lower():match("teleport") or module.Name:lower():match("map") or module.Name:lower():match("waypoint")) then
-                    local success, req = pcall(require, module)
-                    if success and type(req) == "table" then
-                        -- Look for cooldown fields
-                        for k, v in pairs(req) do
-                            if type(k) == "string" and (k:lower():match("cooldown") or k:lower():match("lastteleport") or k:lower():match("nextteleport")) then
-                                req[k] = type(v) == "number" and 0 or false
+--// Noclip Loop
+RunService.RenderStepped:Connect(function()
+    if noclipEnabled then
+        local hrp = getHumanoidRootPart()
+        if hrp then
+            for _, part in ipairs(hrp.Parent:GetDescendants()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+end)
+
+--// Spider Disappearance Teleport Loop
+task.spawn(function()
+    while task.wait(1) do
+        local hrp = getHumanoidRootPart()
+        if not hrp then continue end
+
+        local spiderNearby = countNearbySpiders(hrp, attackRange)
+
+        if spiderNearby then
+            spiderState = "🟢"
+            SpiderStatusLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+            spiderDisappeared = false
+        elseif not spiderNearby and not spiderDisappeared then
+            spiderDisappeared = true
+
+            local originalCF = hrp.CFrame
+            if teleportCFrameBase and teleportCFrameDesert then
+                spiderState = "🟣"
+                SpiderStatusLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+
+                -- Base 45s
+                hrp.Parent:PivotTo(teleportCFrameBase)
+                for i = 45, 1, -1 do
+                    CountdownLabel.Text = "Timer: " .. i .. "s"
+                    task.wait(1)
+                end
+
+                -- Desert 175s
+                hrp.Parent:PivotTo(teleportCFrameDesert)
+                for i = 175, 1, -1 do
+                    CountdownLabel.Text = "Timer: " .. i .. "s"
+                    task.wait(1)
+                end
+
+                -- Base 65s
+                hrp.Parent:PivotTo(teleportCFrameBase)
+                for i = 65, 1, -1 do
+                    CountdownLabel.Text = "Timer: " .. i .. "s"
+                    task.wait(1)
+                end
+
+                -- Back to original
+                hrp.Parent:PivotTo(originalCF)
+                CountdownLabel.Text = "Timer: 0s"
+                spiderState = "🔴"
+                SpiderStatusLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
+            end
+        end
+
+        SpiderStatusLabel.Text = "🕷️ " .. spiderState
+    end
+end)
+
+--// Main Loop (Auto-Teleport for crystalGuardian & Wand Attack)
+task.spawn(function()
+    while true do
+        local hrp = getHumanoidRootPart()
+        if hrp then
+            -- Auto-Teleport (crystalGuardianModel)
+            crystalCount = countNearbyGuardians(hrp, nearbyRadius)
+            if crystalCount >= 5 and autoTeleportEnabled and not isTeleporting then
+                isTeleporting = true
+                local originalCF = hrp.CFrame
+                hrp.Parent:PivotTo(teleportCFrameBase)
+                local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
+                local ws, jp
+                if hum then ws, jp = hum.WalkSpeed, hum.JumpPower; hum.WalkSpeed, hum.JumpPower = 0, 0 end
+                for i = returnDelay, 1, -1 do
+                    CountdownLabel.Text = "Timer: " .. i .. "s"
+                    task.wait(1)
+                end
+                CountdownLabel.Text = "Timer: 0s"
+                hrp.Parent:PivotTo(originalCF)
+                if hum and not frozen then hum.WalkSpeed, hum.JumpPower = ws or walkSpeed, jp or 50 end
+                isTeleporting = false
+            end
+
+            -- Wand Attack
+            if wandEnabled then
+                local mobs = {}
+                local royalTarget = nil
+                for _, obj in pairs(workspace:GetDescendants()) do
+                    if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") then
+                        if targetMobs[obj.Name] then
+                            local ignored = false
+                            for _, ignore in ipairs(ignoreList) do
+                                if string.find(obj.Name, ignore) then ignored = true break end
+                            end
+                            if not ignored then
+                                local dist = (obj.HumanoidRootPart.Position - hrp.Position).Magnitude
+                                if dist < attackRange then
+                                    table.insert(mobs, {model = obj, priority = targetMobs[obj.Name], dist = dist})
+                                    if obj.Name == "royalSpiderModel" then royalTarget = obj end
+                                end
                             end
                         end
                     end
                 end
-            end
-        end
-    end
-end
 
--- Run patches
-local patched = nukeCooldowns()
-patchTeleportModule()
-
---// Teleport Function with Bypass
-local function teleportTo(waypoint)
-    local args = {waypoint}
-    
-    -- Anti-spam: slightly randomize if enabled (some games check for identical rapid calls)
-    if Config.AntiSpamMode then
-        args = {
-            waypoint,
-            [math.random(2, 50)] = tick() -- Random key with timestamp
-        }
-    end
-    
-    local success, err = pcall(function()
-        -- Direct call bypassing any hooks/wrappers
-        if getconnections then
-            -- Disable connections on the remote temporarily
-            local cons = getconnections(TeleportRemote.OnClientInvoke)
-            for _, c in pairs(cons) do
-                c:Disable()
-            end
-        end
-        
-        TeleportRemote:InvokeServer(unpack(args))
-    end)
-    
-    if not success then
-        StatusLabel.Text = "Err: " .. waypoint
-        StatusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-        warn("[WaypointAuto] Fail: " .. tostring(err))
-    else
-        StatusLabel.Text = "OK: " .. waypoint
-        StatusLabel.TextColor3 = Color3.fromRGB(80, 255, 80)
-    end
-    
-    return success
-end
-
---// Main Loop
-local function runCycle()
-    currentIndex = 1
-    
-    thread = task.spawn(function()
-        while isRunning do
-            local waypoint = Config.Waypoints[currentIndex]
-            
-            if waypoint then
-                -- Run teleport in its own thread so cooldowns don't block
-                task.spawn(function()
-                    teleportTo(waypoint)
-                end)
-            end
-            
-            currentIndex = currentIndex + 1
-            if currentIndex > #Config.Waypoints then
-                if Config.AutoRestart then
-                    currentIndex = 1
+                local targetsToAttack = {}
+                if royalTarget then
+                    targetsToAttack = {{model = royalTarget}}
                 else
-                    isRunning = false
-                    break
+                    table.sort(mobs, function(a, b)
+                        if a.priority == b.priority then return a.dist < b.dist else return a.priority < b.priority end
+                    end)
+                    targetsToAttack = mobs
                 end
+
+                if #targetsToAttack > 0 then
+                    local topMob = targetsToAttack[1].model
+                    StatusLabel.Text = "Target: " .. topMob.Name
+                    StatusLabel.TextColor3 = mobColors[topMob.Name] or Color3.fromRGB(255, 255, 255)
+                    for _, mob in ipairs(targetsToAttack) do
+                        for i = 1, multiAttacks do
+                            Event:FireServer("use", "wand", "place", mob.model.HumanoidRootPart.Position)
+                        end
+                    end
+                else
+                    local now = tick()
+                    StatusLabel.Text = "Target: None"
+                    StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+                    if now - lastAutoAttack >= 5 then
+                        lastAutoAttack = now
+                        Event:FireServer("use", "wand", "place", hrp.Position + hrp.CFrame.LookVector * 10)
+                    end
+                end
+            else
+                StatusLabel.Text = "Target: None"
+                StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
             end
-            
-            task.wait(Config.Delay)
         end
-        
-        -- Reset UI when done
-        if not Config.AutoRestart then
-            ToggleButton.Text = "OFF"
-            ToggleButton.TextColor3 = Color3.fromRGB(255, 70, 70)
-            StatusLabel.Text = "Finished"
-            StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-        end
-    end)
-end
-
-local function stopCycle()
-    isRunning = false
-end
-
---// UI Handlers
-ToggleButton.MouseButton1Click:Connect(function()
-    if isRunning then
-        stopCycle()
-        ToggleButton.Text = "OFF"
-        ToggleButton.TextColor3 = Color3.fromRGB(255, 70, 70)
-        StatusLabel.Text = "Stopped"
-        StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-    else
-        isRunning = true
-        ToggleButton.Text = "ON"
-        ToggleButton.TextColor3 = Color3.fromRGB(70, 255, 70)
-        StatusLabel.Text = "Running..."
-        StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-        runCycle()
+        task.wait(attackSpeed)
     end
 end)
 
--- Hover effects
-ToggleButton.MouseEnter:Connect(function()
-    ToggleButton.BackgroundColor3 = Color3.fromRGB(75, 75, 75)
-end)
-ToggleButton.MouseLeave:Connect(function()
-    ToggleButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+--// Initialize WalkSpeed
+task.defer(function()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hum = char:WaitForChild("Humanoid")
+    if hum then hum.WalkSpeed = walkSpeed end
 end)
 
---// Cleanup on re-execute
-if getgenv and getgenv().WaypointAutoCleanup then
-    pcall(getgenv().WaypointAutoCleanup)
-end
-
-if getgenv then
-    getgenv().WaypointAutoCleanup = function()
-        pcall(function()
-            isRunning = false
-            ScreenGui:Destroy()
-        end)
+-- Auto-save on character added (in case settings changed)
+LocalPlayer.CharacterAdded:Connect(function(char)
+    task.wait(1)
+    local hum = char:WaitForChild("Humanoid")
+    if hum and not frozen then
+        hum.WalkSpeed = walkSpeed
     end
-end
-
-StatusLabel.Text = "Bypasses Active (" .. tostring(patched) .. " found)"
+end)
