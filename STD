@@ -215,7 +215,6 @@ local mobColors = {
     ["cow2Model"] = Color3.fromRGB(0, 0, 0),
 }
 
--- BLOCKED: mobs known to crash game scripts when hit
 local ignoreList = {"SwordTroop", "ArcherTroop", "WizardTroop", "Mystical Bag", "wizModel", "slimeModel"}
 
 --// MOB CACHE - ULTRA OPTIMIZED
@@ -228,7 +227,6 @@ local MobCache = {
     updateInterval = 0.5,
 }
 
--- Rig validator: rejects any model missing Torso/UpperTorso (prevents game crash)
 local function HasValidRig(model)
     if not model then return false end
     local hrp = model:FindFirstChild("HumanoidRootPart")
@@ -248,7 +246,6 @@ function MobCache.Update()
     MobCache.spiders = {}
     MobCache.royalSpiders = {}
 
-    -- MASSIVE OPTIMIZATION: only scan workspace.Entities instead of entire workspace
     local entities = workspace:FindFirstChild("Entities")
     local scanTarget = entities and entities:GetChildren() or workspace:GetChildren()
 
@@ -1224,7 +1221,24 @@ task.spawn(function()
     end
 end)
 
---// Main Attack Loop - BULLETPROOF (pcall shell + no blind fallback)
+--// SEPARATE 1s AUTO-ATTACK LOOP (always runs, independent of target loop)
+task.spawn(function()
+    while task.wait(1) do
+        if wandEnabled then
+            local hrp = getHumanoidRootPart()
+            if hrp then
+                -- Fire blindly every 1 second regardless of targets
+                -- Use a safe position (your own position + look vector) that won't hit wizModel
+                local firePos = hrp.Position + hrp.CFrame.LookVector * 5
+                pcall(function()
+                    Event:FireServer("use", "wand", "place", firePos)
+                end)
+            end
+        end
+    end
+end)
+
+--// Main Attack Loop (targeted attacks at attackSpeed interval)
 task.spawn(function()
     while true do
         local success = pcall(function()
@@ -1247,7 +1261,7 @@ task.spawn(function()
                     end
                 end
 
-                -- Wand Attack
+                -- Targeted Wand Attack
                 if wandEnabled then
                     local mobs, royalTarget = MobCache.GetAttackTargets(hrp, attackRange, currentFarmMode)
                     local isFarm = currentFarmMode
@@ -1297,7 +1311,6 @@ task.spawn(function()
                 end
             end
         end)
-        -- Errors are silently swallowed here — no lag, no crash, no red text
         task.wait(attackSpeed)
     end
 end)
@@ -1326,7 +1339,6 @@ LocalPlayer.Idled:Connect(function()
     VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
 end)
 
--- Extra safety nudge every 8 minutes
 task.spawn(function()
     while task.wait(480) do
         local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
@@ -1334,4 +1346,4 @@ task.spawn(function()
     end
 end)
 
-print("[SpiderTool] Loaded | Anti-AFK Active | Crash-Safe | Optimized Cache")
+print("[SpiderTool] Loaded | 1s Auto-Attack: SEPARATE LOOP | Anti-AFK Active")
