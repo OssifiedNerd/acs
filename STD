@@ -178,9 +178,8 @@ local targetMobs = {
     ["spiderModel"] = 3,
     ["crystalGuardianModel"] = 4,
     ["sandGeneralModel"] = 5,
-    ["Sheds"] = 6,
+    ["iceSoldierModel"] = 6,
     ["desertBossModel"] = 7
-    ["iceSoldierModel"] = 8
 }
 
 -- Farm mode targets (no priority)
