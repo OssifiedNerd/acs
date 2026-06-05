@@ -971,7 +971,7 @@ local function DoRenderTeleport(renderCF, targetCF)
     local hrp = getHumanoidRootPart()
     if not hrp then return end
     hrp.Parent:PivotTo(renderCF)
-    task.wait(1)
+    task.wait(3)
     hrp.Parent:PivotTo(targetCF)
 end
 
