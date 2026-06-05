@@ -16,7 +16,7 @@ local Settings = {
     multiAttacks = 3,
     autoTeleportEnabled = true,
     nearbyRadius = 150,
-    returnDelay = 5,
+    returnDelay = 1, -- Changed to 1s
     noclipEnabled = false,
     frozen = false,
     hoverEnabled = false,
@@ -41,9 +41,16 @@ local Settings = {
     renderSpider = nil,
 }
 
-local SETTINGS_FILE = "SpiderToolSettings_v5.json"
+local SETTINGS_FILE = "SpiderToolSettings_v6.json"
 local SAVE_COOLDOWN = 2
 local lastSaveTime = 0
+
+--// Constraint Instances (for Fly / Hover)
+local flyBV = nil
+local flyBG = nil
+local hoverBP = nil
+local hoverBG = nil
+local frozenCF = nil
 
 --// Settings Manager
 local SettingsManager = {}
@@ -241,7 +248,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -60, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🕷️ Spider Tool v5"
+TitleLabel.Text = "🕷️ Spider Tool v6"
 TitleLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 14
@@ -637,6 +644,40 @@ end
 
 MakeDraggable(TitleBar)
 
+--// Fly Helpers
+local function SetupFly()
+    if not flyEnabled then return end
+    local hrp = getHumanoidRootPart()
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if not hrp then return end
+
+    if flyBV then flyBV:Destroy() end
+    if flyBG then flyBG:Destroy() end
+
+    flyBV = Instance.new("BodyVelocity")
+    flyBV.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    flyBV.Velocity = Vector3.new(0, 0, 0)
+    flyBV.Parent = hrp
+
+    flyBG = Instance.new("BodyGyro")
+    flyBG.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    flyBG.P = 10000
+    flyBG.CFrame = hrp.CFrame
+    flyBG.Parent = hrp
+
+    if hum then
+        hum.PlatformStand = false
+        hum.AutoRotate = false
+    end
+end
+
+local function CleanupFly()
+    if flyBV then flyBV:Destroy(); flyBV = nil end
+    if flyBG then flyBG:Destroy(); flyBG = nil end
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum then hum.AutoRotate = true end
+end
+
 --// Button Logic
 MinimizeButton.MouseButton1Click:Connect(function()
     minimized = not minimized
@@ -646,6 +687,9 @@ end)
 CloseButton.MouseButton1Click:Connect(function()
     Settings.guiPosition = MainFrame.Position
     Settings.minimized = minimized
+    CleanupFly()
+    if hoverBP then hoverBP:Destroy(); hoverBP = nil end
+    if hoverBG then hoverBG:Destroy(); hoverBG = nil end
     SettingsManager.Save()
     ScreenGui:Destroy()
     script:Destroy()
@@ -664,7 +708,11 @@ HoverButton.MouseButton1Click:Connect(function()
     Settings.hoverEnabled = hoverEnabled
     HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
     HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
-    if not hoverEnabled then hoveredRoyalSpider = nil end
+    if not hoverEnabled then
+        hoveredRoyalSpider = nil
+        if hoverBP then hoverBP:Destroy(); hoverBP = nil end
+        if hoverBG then hoverBG:Destroy(); hoverBG = nil end
+    end
     SettingsManager.AutoSave()
 end)
 
@@ -673,11 +721,15 @@ FlyButton.MouseButton1Click:Connect(function()
     Settings.flyEnabled = flyEnabled
     FlyButton.Text = "Fly: " .. (flyEnabled and "ON" or "OFF")
     FlyButton.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 200) or Color3.fromRGB(50, 50, 50)
-    local char = LocalPlayer.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        hum.PlatformStand = flyEnabled
-        hum.Sit = false
+    if flyEnabled then
+        SetupFly()
+    else
+        CleanupFly()
+    end
+    -- Kill hover constraints if fly turns on to prevent conflict
+    if flyEnabled then
+        if hoverBP then hoverBP:Destroy(); hoverBP = nil end
+        if hoverBG then hoverBG:Destroy(); hoverBG = nil end
     end
     SettingsManager.AutoSave()
 end)
@@ -749,7 +801,13 @@ FreezeButton.MouseButton1Click:Connect(function()
     FreezeButton.BackgroundColor3 = frozen and Color3.fromRGB(0, 100, 255) or Color3.fromRGB(50, 50, 50)
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     local hum = hrp and hrp.Parent:FindFirstChildOfClass("Humanoid")
-    if hum then hum.WalkSpeed = frozen and 0 or walkSpeed; hum.JumpPower = frozen and 0 or 50 end
+    if frozen then
+        if hrp then frozenCF = hrp.CFrame end
+        if hum then hum.WalkSpeed = 0; hum.JumpPower = 0 end
+    else
+        if hum then hum.WalkSpeed = walkSpeed; hum.JumpPower = 50 end
+        frozenCF = nil
+    end
     SettingsManager.AutoSave()
 end)
 
@@ -758,6 +816,19 @@ NoclipButton.MouseButton1Click:Connect(function()
     Settings.noclipEnabled = noclipEnabled
     NoclipButton.Text = "Noclip: " .. (noclipEnabled and "ON" or "OFF")
     NoclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(50, 50, 50)
+
+    if not noclipEnabled then
+        -- Restore collision on current character
+        local char = LocalPlayer.Character
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+
     SettingsManager.AutoSave()
 end)
 
@@ -769,7 +840,7 @@ AutoTPButton.MouseButton1Click:Connect(function()
     SettingsManager.AutoSave()
 end)
 
--- TP Button setup helper (ROBUST: updates both Settings and locals)
+-- TP Button setup helper
 local function SetupTPButton(mainBtn, renderBtn, settingKey, renderKey, label)
     mainBtn.MouseButton1Click:Connect(function()
         local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -889,6 +960,11 @@ LoadButton.MouseButton1Click:Connect(function()
         end
         UpdateMinimize()
 
+        -- Re-apply fly if it was saved as enabled
+        if flyEnabled then
+            task.delay(0.5, SetupFly)
+        end
+
         LoadButton.Text = "✓ Loaded!"
         task.delay(1.5, function()
             LoadButton.Text = "🔄 Load"
@@ -941,12 +1017,12 @@ local function DoRenderTeleport(renderCF, targetCF)
     hrp.Parent:PivotTo(targetCF)
 end
 
---// Noclip Loop
-RunService.RenderStepped:Connect(function()
+--// Noclip Loop (Stepped - before physics, safer)
+RunService.Stepped:Connect(function()
     if noclipEnabled then
-        local hrp = getHumanoidRootPart()
-        if hrp then
-            for _, part in ipairs(hrp.Parent:GetDescendants()) do
+        local char = LocalPlayer.Character
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
                 if part:IsA("BasePart") and part.CanCollide then
                     part.CanCollide = false
                 end
@@ -955,29 +1031,17 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
---// Hover Loop (for royalSpiderModel) + Track hovered target
+--// Freeze Loop (Hard lock CFrame)
 RunService.RenderStepped:Connect(function()
-    hoveredRoyalSpider = nil
-    if not hoverEnabled or not wandEnabled then return end
-    local hrp = getHumanoidRootPart()
-    if not hrp then return end
-
-    for _, obj in pairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj.Name == "royalSpiderModel" then
-            local mobHrp = obj:FindFirstChild("HumanoidRootPart")
-            if mobHrp then
-                local dist = (mobHrp.Position - hrp.Position).Magnitude
-                if dist < attackRange then
-                    hrp.Parent:PivotTo(CFrame.new(mobHrp.Position + Vector3.new(0, 8, 0), mobHrp.Position))
-                    hoveredRoyalSpider = obj
-                    break
-                end
-            end
+    if frozen and frozenCF then
+        local hrp = getHumanoidRootPart()
+        if hrp then
+            hrp.CFrame = frozenCF
         end
     end
 end)
 
---// Fly Logic
+--// Fly Control Loop
 local flyControl = {W = false, A = false, S = false, D = false, Space = false, LeftShift = false}
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -999,8 +1063,8 @@ UserInputService.InputEnded:Connect(function(input)
     if input.KeyCode == Enum.KeyCode.LeftShift then flyControl.LeftShift = false end
 end)
 
-RunService.RenderStepped:Connect(function(dt)
-    if not flyEnabled then return end
+RunService.RenderStepped:Connect(function()
+    if not flyEnabled or not flyBV or not flyBG then return end
     local hrp = getHumanoidRootPart()
     if not hrp then return end
 
@@ -1016,15 +1080,71 @@ RunService.RenderStepped:Connect(function(dt)
 
     if moveDir.Magnitude > 0 then
         moveDir = moveDir.Unit
-        hrp.AssemblyLinearVelocity = moveDir * flySpeed
+        flyBV.Velocity = moveDir * flySpeed
+        flyBG.CFrame = CFrame.new(hrp.Position, hrp.Position + cam.CFrame.LookVector)
     else
-        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        flyBV.Velocity = Vector3.new(0, 0, 0)
+        flyBG.CFrame = hrp.CFrame
     end
+end)
 
-    local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
-    if hum then
-        hum.PlatformStand = true
-        hum.Sit = false
+--// Hover Loop (Smooth BodyPosition)
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+        if not hoverEnabled or flyEnabled or frozen then
+            if hoverBP then hoverBP:Destroy(); hoverBP = nil end
+            if hoverBG then hoverBG:Destroy(); hoverBG = nil end
+            hoveredRoyalSpider = nil
+            continue
+        end
+
+        local hrp = getHumanoidRootPart()
+        if not hrp then
+            if hoverBP then hoverBP:Destroy(); hoverBP = nil end
+            if hoverBG then hoverBG:Destroy(); hoverBG = nil end
+            hoveredRoyalSpider = nil
+            continue
+        end
+
+        local target = nil
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("Model") and obj.Name == "royalSpiderModel" then
+                local mobHrp = obj:FindFirstChild("HumanoidRootPart")
+                if mobHrp then
+                    local dist = (mobHrp.Position - hrp.Position).Magnitude
+                    if dist < attackRange then
+                        target = mobHrp
+                        hoveredRoyalSpider = obj
+                        break
+                    end
+                end
+            end
+        end
+
+        if target then
+            if not hoverBP or hoverBP.Parent ~= hrp then
+                if hoverBP then hoverBP:Destroy() end
+                hoverBP = Instance.new("BodyPosition")
+                hoverBP.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                hoverBP.P = 10000
+                hoverBP.D = 500
+                hoverBP.Parent = hrp
+            end
+            if not hoverBG or hoverBG.Parent ~= hrp then
+                if hoverBG then hoverBG:Destroy() end
+                hoverBG = Instance.new("BodyGyro")
+                hoverBG.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+                hoverBG.P = 10000
+                hoverBG.Parent = hrp
+            end
+            hoverBP.Position = target.Position + Vector3.new(0, 8, 0)
+            hoverBG.CFrame = CFrame.new(hrp.Position, target.Position)
+        else
+            hoveredRoyalSpider = nil
+            if hoverBP then hoverBP:Destroy(); hoverBP = nil end
+            if hoverBG then hoverBG:Destroy(); hoverBG = nil end
+        end
     end
 end)
 
@@ -1234,4 +1354,11 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     if hum and not frozen then
         hum.WalkSpeed = walkSpeed
     end
+    -- Re-apply fly if active after respawn
+    if flyEnabled then
+        task.delay(0.5, SetupFly)
+    end
+    -- Clean up hover constraints on respawn
+    if hoverBP then hoverBP = nil end
+    if hoverBG then hoverBG = nil end
 end)
