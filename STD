@@ -3,6 +3,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 local Event = ReplicatedStorage:WaitForChild("Event")
 
@@ -19,6 +20,8 @@ local Settings = {
     noclipEnabled = false,
     frozen = false,
     hoverEnabled = false,
+    flyEnabled = false,
+    flySpeed = 100,
     guiPosition = nil,
     minimized = false,
     -- TP Locations
@@ -38,7 +41,7 @@ local Settings = {
     renderSpider = nil,
 }
 
-local SETTINGS_FILE = "SpiderToolSettings_v3.json"
+local SETTINGS_FILE = "SpiderToolSettings_v4.json"
 local SAVE_COOLDOWN = 2
 local lastSaveTime = 0
 
@@ -139,6 +142,8 @@ local isTeleporting = false
 local frozen = Settings.frozen
 local noclipEnabled = Settings.noclipEnabled
 local hoverEnabled = Settings.hoverEnabled
+local flyEnabled = Settings.flyEnabled
+local flySpeed = Settings.flySpeed
 local minimized = Settings.minimized
 
 -- TP Locations
@@ -163,6 +168,8 @@ local spiderState = "🟣"
 local spiderDisappeared = false
 local originalCF = nil
 local currentFarmMode = false
+local safeFarmMode = false
+local hoveredRoyalSpider = nil
 
 -- Target mobs (priority) - Normal mode
 local targetMobs = {
@@ -230,7 +237,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -60, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🕷️ Spider Tool v3"
+TitleLabel.Text = "🕷️ Spider Tool v4"
 TitleLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 14
@@ -294,6 +301,47 @@ HoverButton.Font = Enum.Font.GothamBold
 HoverButton.TextSize = 14
 HoverButton.Parent = ContentFrame
 Instance.new("UICorner", HoverButton).CornerRadius = UDim.new(0, 6)
+
+-- Fly Button
+local FlyButton = Instance.new("TextButton")
+FlyButton.Size = UDim2.new(0.9, 0, 0, 25)
+FlyButton.Text = "Fly: " .. (flyEnabled and "ON" or "OFF")
+FlyButton.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 200) or Color3.fromRGB(50, 50, 50)
+FlyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+FlyButton.Font = Enum.Font.GothamBold
+FlyButton.TextSize = 14
+FlyButton.Parent = ContentFrame
+Instance.new("UICorner", FlyButton).CornerRadius = UDim.new(0, 6)
+
+-- Fly Speed Box
+local FlySpeedRow = Instance.new("Frame")
+FlySpeedRow.Size = UDim2.new(0.9, 0, 0, 25)
+FlySpeedRow.BackgroundTransparency = 1
+FlySpeedRow.Parent = ContentFrame
+local FlySpeedLayout = Instance.new("UIListLayout", FlySpeedRow)
+FlySpeedLayout.FillDirection = Enum.FillDirection.Horizontal
+FlySpeedLayout.Padding = UDim.new(0, 5)
+
+local FlySpeedLabel = Instance.new("TextLabel")
+FlySpeedLabel.Size = UDim2.new(0.5, -2, 1, 0)
+FlySpeedLabel.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+FlySpeedLabel.Text = "Fly Speed:"
+FlySpeedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+FlySpeedLabel.Font = Enum.Font.Gotham
+FlySpeedLabel.TextSize = 13
+FlySpeedLabel.Parent = FlySpeedRow
+Instance.new("UICorner", FlySpeedLabel).CornerRadius = UDim.new(0, 6)
+
+local FlySpeedBox = Instance.new("TextBox")
+FlySpeedBox.Size = UDim2.new(0.5, -2, 1, 0)
+FlySpeedBox.Text = tostring(flySpeed)
+FlySpeedBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+FlySpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+FlySpeedBox.Font = Enum.Font.Gotham
+FlySpeedBox.TextSize = 13
+FlySpeedBox.PlaceholderText = "Speed"
+FlySpeedBox.Parent = FlySpeedRow
+Instance.new("UICorner", FlySpeedBox).CornerRadius = UDim.new(0, 6)
 
 -- Input Row (Speed + Range + WalkSpeed)
 local InputRow = Instance.new("Frame")
@@ -612,7 +660,33 @@ HoverButton.MouseButton1Click:Connect(function()
     Settings.hoverEnabled = hoverEnabled
     HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
     HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
+    if not hoverEnabled then hoveredRoyalSpider = nil end
     SettingsManager.AutoSave()
+end)
+
+FlyButton.MouseButton1Click:Connect(function()
+    flyEnabled = not flyEnabled
+    Settings.flyEnabled = flyEnabled
+    FlyButton.Text = "Fly: " .. (flyEnabled and "ON" or "OFF")
+    FlyButton.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 200) or Color3.fromRGB(50, 50, 50)
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.PlatformStand = flyEnabled
+        hum.Sit = false
+    end
+    SettingsManager.AutoSave()
+end)
+
+FlySpeedBox.FocusLost:Connect(function()
+    local val = tonumber(FlySpeedBox.Text)
+    if val and val > 0 then
+        flySpeed = val
+        Settings.flySpeed = val
+        SettingsManager.AutoSave()
+    else
+        FlySpeedBox.Text = tostring(flySpeed)
+    end
 end)
 
 SpeedBox.FocusLost:Connect(function()
@@ -691,14 +765,19 @@ AutoTPButton.MouseButton1Click:Connect(function()
     SettingsManager.AutoSave()
 end)
 
--- TP Button setup helper
+-- TP Button setup helper (FIXED: properly updates local vars)
 local function SetupTPButton(mainBtn, renderBtn, settingKey, renderKey, label)
     mainBtn.MouseButton1Click:Connect(function()
         local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if hrp then
             local cf = hrp.CFrame
             Settings[settingKey] = cf
-            _G[settingKey] = cf
+            -- Update the local variable directly
+            if settingKey == "teleportCFrameDesert" then teleportCFrameDesert = cf
+            elseif settingKey == "teleportCFrameTundra" then teleportCFrameTundra = cf
+            elseif settingKey == "teleportCFrameFarm" then teleportCFrameFarm = cf
+            elseif settingKey == "teleportCFrameSpider" then teleportCFrameSpider = cf
+            end
             mainBtn.Text = label .. " ✓"
             mainBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
             SettingsManager.AutoSave()
@@ -710,7 +789,11 @@ local function SetupTPButton(mainBtn, renderBtn, settingKey, renderKey, label)
         if hrp then
             local cf = hrp.CFrame
             Settings[renderKey] = cf
-            _G[renderKey] = cf
+            if renderKey == "renderDesert" then renderDesert = cf
+            elseif renderKey == "renderTundra" then renderTundra = cf
+            elseif renderKey == "renderFarm" then renderFarm = cf
+            elseif renderKey == "renderSpider" then renderSpider = cf
+            end
             renderBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 200)
             SettingsManager.AutoSave()
         end
@@ -736,7 +819,11 @@ ForestSetBtn.MouseButton1Click:Connect(function()
     if hrp then
         local spot = forestSpots[currentForestSpot]
         Settings[spot.key] = hrp.CFrame
-        _G[spot.key] = hrp.CFrame
+        if spot.key == "teleportCFrameForest1" then teleportCFrameForest1 = hrp.CFrame
+        elseif spot.key == "teleportCFrameForest2" then teleportCFrameForest2 = hrp.CFrame
+        elseif spot.key == "teleportCFrameForest3" then teleportCFrameForest3 = hrp.CFrame
+        elseif spot.key == "teleportCFrameForest4" then teleportCFrameForest4 = hrp.CFrame
+        end
         currentForestSpot = currentForestSpot % 4 + 1
         ForestLabel.Text = forestSpots[currentForestSpot].label
         ForestLabel.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
@@ -777,6 +864,8 @@ LoadButton.MouseButton1Click:Connect(function()
         frozen = Settings.frozen
         noclipEnabled = Settings.noclipEnabled
         hoverEnabled = Settings.hoverEnabled
+        flyEnabled = Settings.flyEnabled
+        flySpeed = Settings.flySpeed
         minimized = Settings.minimized
 
         teleportCFrameDesert = Settings.teleportCFrameDesert
@@ -797,6 +886,9 @@ LoadButton.MouseButton1Click:Connect(function()
         ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
         HoverButton.Text = "Hover: " .. (hoverEnabled and "ON" or "OFF")
         HoverButton.BackgroundColor3 = hoverEnabled and Color3.fromRGB(100, 0, 100) or Color3.fromRGB(50, 50, 50)
+        FlyButton.Text = "Fly: " .. (flyEnabled and "ON" or "OFF")
+        FlyButton.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 200) or Color3.fromRGB(50, 50, 50)
+        FlySpeedBox.Text = tostring(flySpeed)
         SpeedBox.Text = tostring(attackSpeed)
         RangeBox.Text = tostring(attackRange)
         WalkSpeedBox.Text = tostring(walkSpeed)
@@ -897,8 +989,9 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
---// Hover Loop (for royalSpiderModel)
+--// Hover Loop (for royalSpiderModel) + Track hovered target
 RunService.RenderStepped:Connect(function()
+    hoveredRoyalSpider = nil
     if not hoverEnabled or not wandEnabled then return end
     local hrp = getHumanoidRootPart()
     if not hrp then return end
@@ -910,10 +1003,62 @@ RunService.RenderStepped:Connect(function()
                 local dist = (mobHrp.Position - hrp.Position).Magnitude
                 if dist < attackRange then
                     hrp.Parent:PivotTo(CFrame.new(mobHrp.Position + Vector3.new(0, 8, 0), mobHrp.Position))
+                    hoveredRoyalSpider = obj
                     break
                 end
             end
         end
+    end
+end)
+
+--// Fly Logic
+local flyControl = {W = false, A = false, S = false, D = false, Space = false, LeftShift = false}
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.W then flyControl.W = true end
+    if input.KeyCode == Enum.KeyCode.A then flyControl.A = true end
+    if input.KeyCode == Enum.KeyCode.S then flyControl.S = true end
+    if input.KeyCode == Enum.KeyCode.D then flyControl.D = true end
+    if input.KeyCode == Enum.KeyCode.Space then flyControl.Space = true end
+    if input.KeyCode == Enum.KeyCode.LeftShift then flyControl.LeftShift = true end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.W then flyControl.W = false end
+    if input.KeyCode == Enum.KeyCode.A then flyControl.A = false end
+    if input.KeyCode == Enum.KeyCode.S then flyControl.S = false end
+    if input.KeyCode == Enum.KeyCode.D then flyControl.D = false end
+    if input.KeyCode == Enum.KeyCode.Space then flyControl.Space = false end
+    if input.KeyCode == Enum.KeyCode.LeftShift then flyControl.LeftShift = false end
+end)
+
+RunService.RenderStepped:Connect(function(dt)
+    if not flyEnabled then return end
+    local hrp = getHumanoidRootPart()
+    if not hrp then return end
+
+    local cam = workspace.CurrentCamera
+    local moveDir = Vector3.new(0, 0, 0)
+
+    if flyControl.W then moveDir += cam.CFrame.LookVector end
+    if flyControl.S then moveDir -= cam.CFrame.LookVector end
+    if flyControl.A then moveDir -= cam.CFrame.RightVector end
+    if flyControl.D then moveDir += cam.CFrame.RightVector end
+    if flyControl.Space then moveDir += Vector3.new(0, 1, 0) end
+    if flyControl.LeftShift then moveDir -= Vector3.new(0, 1, 0) end
+
+    if moveDir.Magnitude > 0 then
+        moveDir = moveDir.Unit
+        hrp.AssemblyLinearVelocity = moveDir * flySpeed
+    else
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    end
+
+    local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.PlatformStand = true
+        hum.Sit = false
     end
 end)
 
@@ -997,23 +1142,28 @@ task.spawn(function()
     while true do
         local hrp = getHumanoidRootPart()
         if hrp then
-            -- Auto-Teleport (crystalGuardianModel) - only in non-farm mode
-            if not currentFarmMode then
+            -- Auto-Teleport (crystalGuardianModel) -> TP to Farm, attack, then return
+            if not safeFarmMode and not currentFarmMode then
                 crystalCount = countNearbyGuardians(hrp, nearbyRadius)
-                if crystalCount >= 5 and autoTeleportEnabled and not isTeleporting then
+                if crystalCount >= 5 and autoTeleportEnabled and not isTeleporting and teleportCFrameFarm then
                     isTeleporting = true
+                    safeFarmMode = true
                     local originalGuardianCF = hrp.CFrame
-                    hrp.Parent:PivotTo(teleportCFrameSpider or originalGuardianCF)
-                    local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
-                    local ws, jp
-                    if hum then ws, jp = hum.WalkSpeed, hum.JumpPower; hum.WalkSpeed, hum.JumpPower = 0, 0 end
+
+                    -- TP to Farm (with render helper)
+                    DoRenderTeleport(renderFarm, teleportCFrameFarm)
+
+                    -- Attack farm mobs while safe
                     for i = returnDelay, 1, -1 do
-                        CountdownLabel.Text = "Safe: " .. i .. "s"
+                        CountdownLabel.Text = "Safe Farm: " .. i .. "s"
                         task.wait(1)
                     end
+
                     CountdownLabel.Text = "Timer: 0s"
-                    hrp.Parent:PivotTo(originalGuardianCF)
-                    if hum and not frozen then hum.WalkSpeed, hum.JumpPower = ws or walkSpeed, jp or 50 end
+                    -- TP back
+                    DoRenderTeleport(renderSpider, originalGuardianCF)
+
+                    safeFarmMode = false
                     isTeleporting = false
                 end
             end
@@ -1024,6 +1174,14 @@ task.spawn(function()
                 local royalTarget = nil
                 local activeTargets = currentFarmMode and farmMobs or targetMobs
                 local isFarm = currentFarmMode
+
+                -- If hover is enabled and we're hovering a royal spider, prioritize ONLY that one
+                if hoverEnabled and hoveredRoyalSpider and hoveredRoyalSpider:FindFirstChild("HumanoidRootPart") then
+                    local dist = (hoveredRoyalSpider.HumanoidRootPart.Position - hrp.Position).Magnitude
+                    if dist < attackRange then
+                        royalTarget = hoveredRoyalSpider
+                    end
+                end
 
                 for _, obj in pairs(workspace:GetDescendants()) do
                     if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") then
@@ -1046,7 +1204,9 @@ task.spawn(function()
                                         table.insert(mobs, {model = obj, dist = dist})
                                     else
                                         table.insert(mobs, {model = obj, priority = targetMobs[obj.Name], dist = dist})
-                                        if obj.Name == "royalSpiderModel" then royalTarget = obj end
+                                        if obj.Name == "royalSpiderModel" and not royalTarget then
+                                            royalTarget = obj
+                                        end
                                     end
                                 end
                             end
@@ -1055,7 +1215,7 @@ task.spawn(function()
                 end
 
                 local targetsToAttack = {}
-                if not isFarm and royalTarget then
+                if royalTarget then
                     targetsToAttack = {{model = royalTarget}}
                 else
                     if isFarm then
@@ -1070,7 +1230,7 @@ task.spawn(function()
 
                 if #targetsToAttack > 0 then
                     local topMob = targetsToAttack[1].model
-                    StatusLabel.Text = "Target: " .. topMob.Name .. (currentFarmMode and " [FARM]" or "")
+                    StatusLabel.Text = "Target: " .. topMob.Name .. (currentFarmMode and " [FARM]" or (safeFarmMode and " [SAFE]" or ""))
                     StatusLabel.TextColor3 = mobColors[topMob.Name] or Color3.fromRGB(255, 255, 255)
                     for _, mob in ipairs(targetsToAttack) do
                         for i = 1, multiAttacks do
@@ -1081,8 +1241,7 @@ task.spawn(function()
                     local now = tick()
                     StatusLabel.Text = "Target: None"
                     StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
-                    local idleDelay = currentFarmMode and 1 or 5
-                    if now - lastAutoAttack >= idleDelay then
+                    if now - lastAutoAttack >= 1 then -- CHANGED: 1s for ALL modes
                         lastAutoAttack = now
                         Event:FireServer("use", "wand", "place", hrp.Position + hrp.CFrame.LookVector * 10)
                     end
