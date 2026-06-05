@@ -41,7 +41,7 @@ local Settings = {
     renderSpider = nil,
 }
 
-local SETTINGS_FILE = "SpiderToolSettings_v4.json"
+local SETTINGS_FILE = "SpiderToolSettings_v5.json"
 local SAVE_COOLDOWN = 2
 local lastSaveTime = 0
 
@@ -128,42 +128,44 @@ end
 
 SettingsManager.Load()
 
---// Variables
-local wandEnabled = Settings.wandEnabled
-local attackSpeed = Settings.attackSpeed
-local attackRange = Settings.attackRange
-local walkSpeed = Settings.walkSpeed
-local multiAttacks = Settings.multiAttacks
+--// Sync Settings to Local Variables
+local function SyncLocals()
+    wandEnabled = Settings.wandEnabled
+    attackSpeed = Settings.attackSpeed
+    attackRange = Settings.attackRange
+    walkSpeed = Settings.walkSpeed
+    multiAttacks = Settings.multiAttacks
+    autoTeleportEnabled = Settings.autoTeleportEnabled
+    nearbyRadius = Settings.nearbyRadius
+    returnDelay = Settings.returnDelay
+    frozen = Settings.frozen
+    noclipEnabled = Settings.noclipEnabled
+    hoverEnabled = Settings.hoverEnabled
+    flyEnabled = Settings.flyEnabled
+    flySpeed = Settings.flySpeed
+    minimized = Settings.minimized
+
+    teleportCFrameDesert = Settings.teleportCFrameDesert
+    teleportCFrameTundra = Settings.teleportCFrameTundra
+    teleportCFrameForest1 = Settings.teleportCFrameForest1
+    teleportCFrameForest2 = Settings.teleportCFrameForest2
+    teleportCFrameForest3 = Settings.teleportCFrameForest3
+    teleportCFrameForest4 = Settings.teleportCFrameForest4
+    teleportCFrameFarm = Settings.teleportCFrameFarm
+    teleportCFrameSpider = Settings.teleportCFrameSpider
+
+    renderDesert = Settings.renderDesert
+    renderTundra = Settings.renderTundra
+    renderForest = Settings.renderForest
+    renderFarm = Settings.renderFarm
+    renderSpider = Settings.renderSpider
+end
+
+SyncLocals()
+
+--// Runtime Variables
 local lastAutoAttack = 0
-local autoTeleportEnabled = Settings.autoTeleportEnabled
-local nearbyRadius = Settings.nearbyRadius
-local returnDelay = Settings.returnDelay
 local isTeleporting = false
-local frozen = Settings.frozen
-local noclipEnabled = Settings.noclipEnabled
-local hoverEnabled = Settings.hoverEnabled
-local flyEnabled = Settings.flyEnabled
-local flySpeed = Settings.flySpeed
-local minimized = Settings.minimized
-
--- TP Locations
-local teleportCFrameDesert = Settings.teleportCFrameDesert
-local teleportCFrameTundra = Settings.teleportCFrameTundra
-local teleportCFrameForest1 = Settings.teleportCFrameForest1
-local teleportCFrameForest2 = Settings.teleportCFrameForest2
-local teleportCFrameForest3 = Settings.teleportCFrameForest3
-local teleportCFrameForest4 = Settings.teleportCFrameForest4
-local teleportCFrameFarm = Settings.teleportCFrameFarm
-local teleportCFrameSpider = Settings.teleportCFrameSpider
-
--- Render helpers
-local renderDesert = Settings.renderDesert
-local renderTundra = Settings.renderTundra
-local renderForest = Settings.renderForest
-local renderFarm = Settings.renderFarm
-local renderSpider = Settings.renderSpider
-
--- Spider vars
 local spiderState = "🟣"
 local spiderDisappeared = false
 local originalCF = nil
@@ -175,11 +177,12 @@ local hoveredRoyalSpider = nil
 local targetMobs = {
     ["royalSpiderModel"] = 1,
     ["sandManModel"] = 2,
-    ["spiderModel"] = 3,
-    ["crystalGuardianModel"] = 4,
-    ["sandGeneralModel"] = 5,
-    ["iceSoldierModel"] = 6,
-    ["desertBossModel"] = 7
+    ["iceSoldierModel"] = 3,
+    ["spiderModel"] = 4,
+    ["crystalGuardianModel"] = 5,
+    ["sandGeneralModel"] = 6,
+    ["Sheds"] = 7,
+    ["desertBossModel"] = 8
 }
 
 -- Farm mode targets (no priority)
@@ -196,6 +199,7 @@ local farmMobs = {
 local mobColors = {
     ["royalSpiderModel"] = Color3.fromRGB(255, 0, 0),
     ["spiderModel"] = Color3.fromRGB(200, 100, 100),
+    ["iceSoldierModel"] = Color3.fromRGB(0, 255, 255),
     ["crystalGuardianModel"] = Color3.fromRGB(0, 255, 0),
     ["crystalArcherModel"] = Color3.fromRGB(0, 200, 200),
     ["Sheds"] = Color3.fromRGB(200, 200, 100),
@@ -237,7 +241,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -60, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🕷️ Spider Tool v4"
+TitleLabel.Text = "🕷️ Spider Tool v5"
 TitleLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 14
@@ -765,19 +769,14 @@ AutoTPButton.MouseButton1Click:Connect(function()
     SettingsManager.AutoSave()
 end)
 
--- TP Button setup helper (FIXED: properly updates local vars)
+-- TP Button setup helper (ROBUST: updates both Settings and locals)
 local function SetupTPButton(mainBtn, renderBtn, settingKey, renderKey, label)
     mainBtn.MouseButton1Click:Connect(function()
         local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if hrp then
             local cf = hrp.CFrame
             Settings[settingKey] = cf
-            -- Update the local variable directly
-            if settingKey == "teleportCFrameDesert" then teleportCFrameDesert = cf
-            elseif settingKey == "teleportCFrameTundra" then teleportCFrameTundra = cf
-            elseif settingKey == "teleportCFrameFarm" then teleportCFrameFarm = cf
-            elseif settingKey == "teleportCFrameSpider" then teleportCFrameSpider = cf
-            end
+            SyncLocals()
             mainBtn.Text = label .. " ✓"
             mainBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
             SettingsManager.AutoSave()
@@ -789,11 +788,7 @@ local function SetupTPButton(mainBtn, renderBtn, settingKey, renderKey, label)
         if hrp then
             local cf = hrp.CFrame
             Settings[renderKey] = cf
-            if renderKey == "renderDesert" then renderDesert = cf
-            elseif renderKey == "renderTundra" then renderTundra = cf
-            elseif renderKey == "renderFarm" then renderFarm = cf
-            elseif renderKey == "renderSpider" then renderSpider = cf
-            end
+            SyncLocals()
             renderBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 200)
             SettingsManager.AutoSave()
         end
@@ -819,11 +814,7 @@ ForestSetBtn.MouseButton1Click:Connect(function()
     if hrp then
         local spot = forestSpots[currentForestSpot]
         Settings[spot.key] = hrp.CFrame
-        if spot.key == "teleportCFrameForest1" then teleportCFrameForest1 = hrp.CFrame
-        elseif spot.key == "teleportCFrameForest2" then teleportCFrameForest2 = hrp.CFrame
-        elseif spot.key == "teleportCFrameForest3" then teleportCFrameForest3 = hrp.CFrame
-        elseif spot.key == "teleportCFrameForest4" then teleportCFrameForest4 = hrp.CFrame
-        end
+        SyncLocals()
         currentForestSpot = currentForestSpot % 4 + 1
         ForestLabel.Text = forestSpots[currentForestSpot].label
         ForestLabel.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
@@ -838,7 +829,7 @@ ForestRenderBtn.MouseButton1Click:Connect(function()
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if hrp then
         Settings.renderForest = hrp.CFrame
-        renderForest = hrp.CFrame
+        SyncLocals()
         ForestRenderBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 200)
         SettingsManager.AutoSave()
     end
@@ -855,32 +846,7 @@ end)
 
 LoadButton.MouseButton1Click:Connect(function()
     if SettingsManager.Load() then
-        wandEnabled = Settings.wandEnabled
-        attackSpeed = Settings.attackSpeed
-        attackRange = Settings.attackRange
-        walkSpeed = Settings.walkSpeed
-        multiAttacks = Settings.multiAttacks
-        autoTeleportEnabled = Settings.autoTeleportEnabled
-        frozen = Settings.frozen
-        noclipEnabled = Settings.noclipEnabled
-        hoverEnabled = Settings.hoverEnabled
-        flyEnabled = Settings.flyEnabled
-        flySpeed = Settings.flySpeed
-        minimized = Settings.minimized
-
-        teleportCFrameDesert = Settings.teleportCFrameDesert
-        teleportCFrameTundra = Settings.teleportCFrameTundra
-        teleportCFrameForest1 = Settings.teleportCFrameForest1
-        teleportCFrameForest2 = Settings.teleportCFrameForest2
-        teleportCFrameForest3 = Settings.teleportCFrameForest3
-        teleportCFrameForest4 = Settings.teleportCFrameForest4
-        teleportCFrameFarm = Settings.teleportCFrameFarm
-        teleportCFrameSpider = Settings.teleportCFrameSpider
-        renderDesert = Settings.renderDesert
-        renderTundra = Settings.renderTundra
-        renderForest = Settings.renderForest
-        renderFarm = Settings.renderFarm
-        renderSpider = Settings.renderSpider
+        SyncLocals()
 
         ToggleButton.Text = "Toggle Wand: " .. (wandEnabled and "ON" or "OFF")
         ToggleButton.BackgroundColor3 = wandEnabled and Color3.fromRGB(0, 100, 0) or Color3.fromRGB(50, 50, 50)
@@ -965,7 +931,7 @@ local function countNearbySpiders(root, radius)
     return false
 end
 
--- Render helper function
+-- Render helper function (3 seconds)
 local function DoRenderTeleport(renderCF, targetCF)
     if not renderCF or not targetCF then return end
     local hrp = getHumanoidRootPart()
@@ -1241,7 +1207,7 @@ task.spawn(function()
                     local now = tick()
                     StatusLabel.Text = "Target: None"
                     StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
-                    if now - lastAutoAttack >= 1 then -- CHANGED: 1s for ALL modes
+                    if now - lastAutoAttack >= 1 then -- 1s for ALL modes
                         lastAutoAttack = now
                         Event:FireServer("use", "wand", "place", hrp.Position + hrp.CFrame.LookVector * 10)
                     end
