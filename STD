@@ -8,6 +8,20 @@ local VirtualUser = game:GetService("VirtualUser")
 local LocalPlayer = Players.LocalPlayer
 local Event = ReplicatedStorage:WaitForChild("Event")
 
+--// ========== ADJUSTABLE DURATIONS ==========
+-- How long to stay at the "render" position before TPing to the actual spot
+local RENDER_DURATION = 2
+
+-- Spider Disappearance sequence durations (in seconds)
+local DESERT_DURATION = 100
+local TUNDRA_DURATION = 30
+local FOREST_DURATION_PER_SPOT = 15  -- each of the 4 forest spots
+local FARM_DURATION = 68
+
+-- Safe farm duration (when crystal guardians are nearby)
+local SAFE_FARM_DURATION = 1
+--// ===========================================
+
 --// Settings System
 local Settings = {
     wandEnabled = false,
@@ -17,7 +31,7 @@ local Settings = {
     multiAttacks = 3,
     autoTeleportEnabled = true,
     nearbyRadius = 150,
-    returnDelay = 1,
+    returnDelay = SAFE_FARM_DURATION,
     noclipEnabled = false,
     hoverEnabled = false,
     flyEnabled = false,
@@ -124,7 +138,7 @@ function SettingsManager.Clear()
     end
     Settings.wandEnabled = false; Settings.attackSpeed = 0.3; Settings.attackRange = 100
     Settings.walkSpeed = 50; Settings.multiAttacks = 3; Settings.autoTeleportEnabled = true
-    Settings.nearbyRadius = 150; Settings.returnDelay = 1; Settings.noclipEnabled = false
+    Settings.nearbyRadius = 150; Settings.returnDelay = SAFE_FARM_DURATION; Settings.noclipEnabled = false
     Settings.hoverEnabled = false; Settings.flyEnabled = false; Settings.flySpeed = 100
     Settings.minimized = false
 end
@@ -1030,13 +1044,13 @@ ClearButton.MouseButton1Click:Connect(function()
     task.delay(1.5, function() ClearButton.Text = "🗑️ Clear" end)
 end)
 
---// Render helper
+--// Render helper - uses RENDER_DURATION variable
 local function DoRenderTeleport(renderCF, targetCF)
     if not renderCF or not targetCF then return end
     local char = LocalPlayer.Character
     if not char then return end
     SafeTeleport(char, renderCF)
-    task.wait(3)
+    task.wait(RENDER_DURATION)
     SafeTeleport(char, targetCF)
 end
 
@@ -1178,7 +1192,7 @@ task.spawn(function()
     end
 end)
 
---// Spider Disappearance Loop
+--// Spider Disappearance Loop - uses duration variables
 task.spawn(function()
     while task.wait(1) do
         local hrp = getHumanoidRootPart()
@@ -1196,21 +1210,33 @@ task.spawn(function()
                and teleportCFrameFarm and teleportCFrameSpider then
                 spiderState = "🟣"
                 SpiderStatusLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+                
+                -- Desert
                 DoRenderTeleport(renderDesert, teleportCFrameDesert)
-                for i = 90, 1, -1 do CountdownLabel.Text = "Desert: " .. i .. "s"; task.wait(1) end
+                for i = DESERT_DURATION, 1, -1 do CountdownLabel.Text = "Desert: " .. i .. "s"; task.wait(1) end
+                
+                -- Tundra
                 DoRenderTeleport(renderTundra, teleportCFrameTundra)
-                for i = 30, 1, -1 do CountdownLabel.Text = "Tundra: " .. i .. "s"; task.wait(1) end
+                for i = TUNDRA_DURATION, 1, -1 do CountdownLabel.Text = "Tundra: " .. i .. "s"; task.wait(1) end
+                
+                -- Forest (4 spots)
                 local forestCFs = {teleportCFrameForest1, teleportCFrameForest2, teleportCFrameForest3, teleportCFrameForest4}
                 for spotIdx = 1, 4 do
                     DoRenderTeleport(renderForest, forestCFs[spotIdx])
-                    for i = 15, 1, -1 do CountdownLabel.Text = "Forest " .. spotIdx .. "/4: " .. i .. "s"; task.wait(1) end
+                    for i = FOREST_DURATION_PER_SPOT, 1, -1 do CountdownLabel.Text = "Forest " .. spotIdx .. "/4: " .. i .. "s"; task.wait(1) end
                 end
+                
+                -- Tundra again
                 DoRenderTeleport(renderTundra, teleportCFrameTundra)
-                for i = 30, 1, -1 do CountdownLabel.Text = "Tundra: " .. i .. "s"; task.wait(1) end
+                for i = TUNDRA_DURATION, 1, -1 do CountdownLabel.Text = "Tundra: " .. i .. "s"; task.wait(1) end
+                
+                -- Farm
                 currentFarmMode = true
                 DoRenderTeleport(renderFarm, teleportCFrameFarm)
-                for i = 90, 1, -1 do CountdownLabel.Text = "Farm: " .. i .. "s"; task.wait(1) end
+                for i = FARM_DURATION, 1, -1 do CountdownLabel.Text = "Farm: " .. i .. "s"; task.wait(1) end
                 currentFarmMode = false
+                
+                -- Back to original
                 DoRenderTeleport(renderSpider, originalCF)
                 CountdownLabel.Text = "Timer: 0s"
                 spiderState = "🔴"
@@ -1221,14 +1247,12 @@ task.spawn(function()
     end
 end)
 
---// SEPARATE 1s AUTO-ATTACK LOOP (always runs, independent of target loop)
+--// SEPARATE 1s AUTO-ATTACK LOOP
 task.spawn(function()
     while task.wait(1) do
         if wandEnabled then
             local hrp = getHumanoidRootPart()
             if hrp then
-                -- Fire blindly every 1 second regardless of targets
-                -- Use a safe position (your own position + look vector) that won't hit wizModel
                 local firePos = hrp.Position + hrp.CFrame.LookVector * 5
                 pcall(function()
                     Event:FireServer("use", "wand", "place", firePos)
@@ -1244,14 +1268,14 @@ task.spawn(function()
         local success = pcall(function()
             local hrp = getHumanoidRootPart()
             if hrp then
-                -- Auto-Teleport
+                -- Auto-Teleport (uses SAFE_FARM_DURATION)
                 if not safeFarmMode and not currentFarmMode then
                     local crystalCount = MobCache.GetNearbyGuardians(hrp, nearbyRadius)
                     if crystalCount >= 5 and autoTeleportEnabled and not isTeleporting and teleportCFrameFarm then
                         isTeleporting = true; safeFarmMode = true
                         local originalGuardianCF = hrp.CFrame
                         DoRenderTeleport(renderFarm, teleportCFrameFarm)
-                        for i = returnDelay, 1, -1 do
+                        for i = SAFE_FARM_DURATION, 1, -1 do
                             CountdownLabel.Text = "Safe Farm: " .. i .. "s"
                             task.wait(1)
                         end
@@ -1346,4 +1370,4 @@ task.spawn(function()
     end
 end)
 
-print("[SpiderTool] Loaded | 1s Auto-Attack: SEPARATE LOOP | Anti-AFK Active")
+print("[SpiderTool] Loaded | Durations: Render=" .. RENDER_DURATION .. "s | Desert=" .. DESERT_DURATION .. "s | Tundra=" .. TUNDRA_DURATION .. "s | ForestSpot=" .. FOREST_DURATION_PER_SPOT .. "s | Farm=" .. FARM_DURATION .. "s | SafeFarm=" .. SAFE_FARM_DURATION .. "s")
