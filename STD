@@ -25,7 +25,7 @@ local SAFE_FARM_DURATION = 1
 --// Settings System
 local Settings = {
     wandEnabled = false,
-    attackSpeed = 0.3,
+    attackSpeed = 0.01,
     attackRange = 100,
     walkSpeed = 50,
     multiAttacks = 3,
