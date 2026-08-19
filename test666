@@ -131,7 +131,7 @@ local returnArgs = {"\229\137\175\230\156\172\229\155\158\229\159\142"}
 local targetItems = {"Blueberry", "Withered Mushroom"}
 
 -- Customize your kill and return times here
-local killTime = 5 
+local killTime = 8 
 local returnWaitTime = 5 
 
 while true do
