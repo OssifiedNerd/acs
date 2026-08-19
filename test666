@@ -30,7 +30,6 @@ task.spawn(function()
             end)
             task.wait(0.2)
         end
-        -- Waits 60 seconds before trying to claim all 12 rewards again
         task.wait(60) 
     end
 end)
@@ -48,20 +47,13 @@ task.spawn(function()
     }
     
     while true do
-        -- Start the potion
         pcall(function()
             remoteFunc:InvokeServer(unpack(startArgs))
         end)
-        
-        -- Wait 10.5 seconds for the cooldown
         task.wait(10.5)
-        
-        -- Claim the potion
         pcall(function()
             remoteFunc:InvokeServer(unpack(claimArgs))
         end)
-        
-        -- Tiny delay before looping again to prevent spam
         task.wait(0.5) 
     end
 end)
@@ -75,7 +67,6 @@ task.spawn(function()
         [2] = {}
     }
     
-    -- task.wait() with no numbers runs as fast as the game can process it (~60 times a second)
     while task.wait() do
         pcall(function()
             remoteFunc:InvokeServer(unpack(damageArgs))
@@ -84,7 +75,54 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 5. MAIN AUTO-FARM (Spawn, Kill, Loot, Return)
+-- 5. AUTO-POTION DRINKER (Runs in background)
+-- ==========================================
+task.spawn(function()
+    local drinkString = "\228\189\191\231\148\168\232\141\175\230\176\180"
+    
+    -- Add the names of any potions you want to auto-drink here!
+    local targetPotions = {"Fire Arrow"} 
+    
+    while task.wait(2) do
+        pcall(function()
+            -- Scan the player's UI for inventory items
+            for _, obj in ipairs(Players.LocalPlayer.PlayerGui:GetDescendants()) do
+                if obj:IsA("TextLabel") then
+                    
+                    local itemText = string.lower(obj.Text)
+                    
+                    for _, target in ipairs(targetPotions) do
+                        if string.find(itemText, string.lower(target)) then
+                            
+                            -- The parent frame (Warehouse_xxxx) holds the hidden Attribute
+                            local frame = obj.Parent
+                            
+                            if frame then
+                                -- THE MAGIC KEY: Grab the hidden OnlyID attribute directly!
+                                local potionID = frame:GetAttribute("OnlyID")
+                                
+                                if potionID then
+                                    local args = {
+                                        [1] = drinkString,
+                                        [2] = { ["onlyID"] = potionID }
+                                    }
+                                    -- Drink the potion
+                                    remoteFunc:InvokeServer(unpack(args))
+                                    
+                                    -- Tiny delay to prevent server spam if you have 100+ potions
+                                    task.wait(0.1) 
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+    end
+end)
+
+-- ==========================================
+-- 6. MAIN AUTO-FARM (Spawn, Kill, Loot, Return)
 -- ==========================================
 local spawnArgs = {"\229\137\175\230\156\172\229\133\179\229\141\161\229\136\183\230\128\170", 1}
 local pickupArgs = "\230\139\190\229\143\150\230\142\137\232\144\189\231\137\169"
@@ -97,13 +135,9 @@ local killTime = 5
 local returnWaitTime = 5 
 
 while true do
-    -- 1. Spawn Enemies
     remoteEvent:FireServer(unpack(spawnArgs))
-    
-    -- 2. Wait for enemies to be killed
     task.wait(killTime)
     
-    -- 3. Loot the specific items
     local itemsLeftOnGround = true
     while itemsLeftOnGround do
         itemsLeftOnGround = false 
@@ -115,7 +149,6 @@ while true do
                     
                     local itemText = string.lower(obj.Text)
                     for _, target in ipairs(targetItems) do
-                        
                         if string.find(itemText, string.lower(target)) then
                             local idFolder = obj.Parent and obj.Parent.Parent and obj.Parent.Parent.Parent
                             if idFolder and tonumber(idFolder.Name) then
@@ -134,9 +167,6 @@ while true do
         task.wait(0.5) 
     end
     
-    -- 4. Return to base
     remoteEvent:FireServer(unpack(returnArgs))
-    
-    -- 5. Wait before starting the next wave
     task.wait(returnWaitTime)
 end
