@@ -1,8 +1,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
+local TeleportService = game:GetService("TeleportService")
 
--- Define our Remotes
 local remoteEvent = ReplicatedStorage.Msg.RemoteEvent.NetWorkRemoteEvent
 local remoteFunc = ReplicatedStorage.Msg.RemoteFunction.NetWorkRemoteFunction
 
@@ -16,18 +16,13 @@ Players.LocalPlayer.Idled:Connect(function()
 end)
 
 -- ==========================================
--- 2. AUTO-CLAIM REWARDS (Runs in background)
+-- 2. AUTO-CLAIM REWARDS
 -- ==========================================
 task.spawn(function()
     while true do
         for i = 1, 12 do
-            local args = {
-                [1] = "\233\162\134\229\143\150\229\156\168\231\186\191\229\165\150\229\138\177",
-                [2] = i
-            }
-            pcall(function()
-                remoteFunc:InvokeServer(unpack(args))
-            end)
+            local args = {"\233\162\134\229\143\150\229\156\168\231\186\191\229\165\150\229\138\177", i}
+            pcall(function() remoteFunc:InvokeServer(unpack(args)) end)
             task.wait(0.2)
         end
         task.wait(60) 
@@ -35,81 +30,50 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 3. AUTO-POTION MAKER (Runs in background)
+-- 3. AUTO-POTION MAKER
 -- ==========================================
 task.spawn(function()
-    local startArgs = {
-        [1] = "\231\130\188\233\135\145\231\130\188\229\136\182",
-        [2] = {["recipeId"] = 1}
-    }
-    local claimArgs = {
-        [1] = "\231\130\188\233\135\145\230\139\190\229\143\150\230\136\144\229\147\129"
-    }
+    local startArgs = {"\231\130\188\233\135\145\231\130\188\229\136\182", {["recipeId"] = 1}}
+    local claimArgs = {"\231\130\188\233\135\145\230\139\190\229\143\150\230\136\144\229\147\129"}
     
     while true do
-        pcall(function()
-            remoteFunc:InvokeServer(unpack(startArgs))
-        end)
+        pcall(function() remoteFunc:InvokeServer(unpack(startArgs)) end)
         task.wait(10.5)
-        pcall(function()
-            remoteFunc:InvokeServer(unpack(claimArgs))
-        end)
+        pcall(function() remoteFunc:InvokeServer(unpack(claimArgs)) end)
         task.wait(0.5) 
     end
 end)
 
 -- ==========================================
--- 4. AUTO-DAMAGE BOOSTER (Runs as fast as possible)
+-- 4. AUTO-DAMAGE BOOSTER
 -- ==========================================
 task.spawn(function()
-    local damageArgs = {
-        [1] = "\232\174\173\231\187\131\231\130\185\229\177\143",
-        [2] = {}
-    }
-    
+    local damageArgs = {"\232\174\173\231\187\131\231\130\185\229\177\143", {}}
     while task.wait() do
-        pcall(function()
-            remoteFunc:InvokeServer(unpack(damageArgs))
-        end)
+        pcall(function() remoteFunc:InvokeServer(unpack(damageArgs)) end)
     end
 end)
 
 -- ==========================================
--- 5. AUTO-POTION DRINKER (Runs in background)
+-- 5. AUTO-POTION DRINKER
 -- ==========================================
 task.spawn(function()
     local drinkString = "\228\189\191\231\148\168\232\141\175\230\176\180"
-    
-    -- Add the names of any potions you want to auto-drink here!
     local targetPotions = {"Fire Arrow"} 
     
     while task.wait(2) do
         pcall(function()
-            -- Scan the player's UI for inventory items
             for _, obj in ipairs(Players.LocalPlayer.PlayerGui:GetDescendants()) do
                 if obj:IsA("TextLabel") then
-                    
                     local itemText = string.lower(obj.Text)
-                    
                     for _, target in ipairs(targetPotions) do
                         if string.find(itemText, string.lower(target)) then
-                            
-                            -- The parent frame (Warehouse_xxxx) holds the hidden Attribute
                             local frame = obj.Parent
-                            
                             if frame then
-                                -- THE MAGIC KEY: Grab the hidden OnlyID attribute directly!
                                 local potionID = frame:GetAttribute("OnlyID")
-                                
                                 if potionID then
-                                    local args = {
-                                        [1] = drinkString,
-                                        [2] = { ["onlyID"] = potionID }
-                                    }
-                                    -- Drink the potion
+                                    local args = {drinkString, { ["onlyID"] = potionID }}
                                     remoteFunc:InvokeServer(unpack(args))
-                                    
-                                    -- Tiny delay to prevent server spam if you have 100+ potions
                                     task.wait(0.1) 
                                 end
                             end
@@ -122,15 +86,29 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 6. MAIN AUTO-FARM (Spawn, Kill, Loot, Return)
+-- 6. AUTO-REJOIN & COUNTDOWN (51 Minutes)
+-- ==========================================
+task.spawn(function()
+    local minutesLeft = 51
+    
+    while minutesLeft > 0 do
+        print("⏳ [AUTO-REJOIN] Time until server reset: " .. tostring(minutesLeft) .. " minutes.")
+        task.wait(60) -- Wait exactly 1 minute
+        minutesLeft = minutesLeft - 1
+    end
+    
+    print("🔄 [AUTO-REJOIN] 51 Minutes reached! Teleporting to a fresh server...")
+    TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
+end)
+
+-- ==========================================
+-- 7. MAIN AUTO-FARM (Spawn, Kill, Loot, Return)
 -- ==========================================
 local spawnArgs = {"\229\137\175\230\156\172\229\133\179\229\141\161\229\136\183\230\128\170", 1}
 local pickupArgs = "\230\139\190\229\143\150\230\142\137\232\144\189\231\137\169"
 local returnArgs = {"\229\137\175\230\156\172\229\155\158\229\159\142"}
 
 local targetItems = {"Blueberry", "Withered Mushroom"}
-
--- Customize your kill and return times here
 local killTime = 3 
 local returnWaitTime = 5 
 
@@ -146,16 +124,12 @@ while true do
         if dropsClient then
             for _, obj in ipairs(dropsClient:GetDescendants()) do
                 if obj:IsA("TextLabel") and obj.Name == "ZhName" then
-                    
                     local itemText = string.lower(obj.Text)
                     for _, target in ipairs(targetItems) do
                         if string.find(itemText, string.lower(target)) then
                             local idFolder = obj.Parent and obj.Parent.Parent and obj.Parent.Parent.Parent
                             if idFolder and tonumber(idFolder.Name) then
-                                local args = {
-                                    [1] = pickupArgs,
-                                    [2] = tostring(idFolder.Name)
-                                }
+                                local args = {pickupArgs, tostring(idFolder.Name)}
                                 remoteEvent:FireServer(unpack(args))
                                 itemsLeftOnGround = true 
                             end
