@@ -90,7 +90,7 @@ end)
 -- 6. AUTO-REJOIN & COUNTDOWN (With Min 2 Inventory Open)
 -- ==========================================
 task.spawn(function()
-    local minutesLeft = 51
+    local minutesLeft = 56
     local elapsedMinutes = 0
     
     while minutesLeft > 0 do
