@@ -56,10 +56,12 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 5. AUTO-POTION DRINKER
+-- 5. AUTO-POTION GIFTER (Equip -> Gift)
 -- ==========================================
 task.spawn(function()
-    local drinkString = "\228\189\191\231\148\168\232\141\175\230\176\180"
+    local equipString = "\232\131\140\229\140\133\229\183\165\229\133\183\230\160\143\229\136\135\230\141\162\230\137\139\230\140\129"
+    local giftString = "\232\181\160\233\128\129\232\175\183\230\177\130"
+    local targetPlayerId = 1964437012 
     local targetPotions = {"Fire Arrow"} 
     
     while task.wait(2) do
@@ -73,9 +75,19 @@ task.spawn(function()
                             if frame then
                                 local potionID = frame:GetAttribute("OnlyID")
                                 if potionID then
-                                    local args = {drinkString, { ["onlyID"] = potionID }}
-                                    remoteFunc:InvokeServer(unpack(args))
-                                    task.wait(0.1) 
+                                    -- 1. Equip the potion
+                                    local equipArgs = {equipString, { ["onlyID"] = potionID }}
+                                    remoteEvent:FireServer(unpack(equipArgs))
+                                    
+                                    -- Wait 0.3s for the server to process the equip
+                                    task.wait(0.3)
+                                    
+                                    -- 2. Gift it away
+                                    local giftArgs = {giftString, targetPlayerId}
+                                    remoteEvent:FireServer(unpack(giftArgs))
+                                    
+                                    -- Short delay before grabbing the next potion to avoid spam kicks
+                                    task.wait(0.3) 
                                 end
                             end
                         end
@@ -87,7 +99,7 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 6. AUTO-REJOIN & COUNTDOWN (With Min 2 Inventory Open)
+-- 6. AUTO-REJOIN & COUNTDOWN (56 Minutes)
 -- ==========================================
 task.spawn(function()
     local minutesLeft = 56
@@ -96,7 +108,6 @@ task.spawn(function()
     while minutesLeft > 0 do
         print("⏳ [AUTO-REJOIN] Time until server reset: " .. tostring(minutesLeft) .. " minutes.")
         
-        -- Open inventory exactly at the 2nd minute mark
         if elapsedMinutes == 2 then
             pcall(function()
                 local inventoryKey = Enum.KeyCode.Backquote
@@ -107,12 +118,12 @@ task.spawn(function()
             end)
         end
         
-        task.wait(60) -- Wait 1 minute
+        task.wait(60) 
         minutesLeft = minutesLeft - 1
         elapsedMinutes = elapsedMinutes + 1
     end
     
-    print("🔄 [AUTO-REJOIN] 51 Minutes reached! Teleporting to a fresh server...")
+    print("🔄 [AUTO-REJOIN] 56 Minutes reached! Teleporting...")
     TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
 end)
 
@@ -123,7 +134,7 @@ local spawnArgs = {"\229\137\175\230\156\172\229\133\179\229\141\161\229\136\183
 local pickupArgs = "\230\139\190\229\143\150\230\142\137\232\144\189\231\137\169"
 local returnArgs = {"\229\137\175\230\156\172\229\155\158\229\159\142"}
 
-local targetItems = {"Blueberry", "Withered Mushroom"}
+local targetItems = {"Blueberry", "Withered Mushroom", "Sacred Flame", "Shadow Crystal"}
 local killTime = 3 
 local returnWaitTime = 5 
 
