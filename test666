@@ -56,50 +56,7 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 5. AUTO-POTION GIFTER (Equip -> Gift)
--- ==========================================
-task.spawn(function()
-    local equipString = "\232\131\140\229\140\133\229\183\165\229\133\183\230\160\143\229\136\135\230\141\162\230\137\139\230\140\129"
-    local giftString = "\232\181\160\233\128\129\232\175\183\230\177\130"
-    local targetPlayerId = 1964437012 
-    local targetPotions = {"Fire Arrow"} 
-    
-    while task.wait(2) do
-        pcall(function()
-            for _, obj in ipairs(Players.LocalPlayer.PlayerGui:GetDescendants()) do
-                if obj:IsA("TextLabel") then
-                    local itemText = string.lower(obj.Text)
-                    for _, target in ipairs(targetPotions) do
-                        if string.find(itemText, string.lower(target)) then
-                            local frame = obj.Parent
-                            if frame then
-                                local potionID = frame:GetAttribute("OnlyID")
-                                if potionID then
-                                    -- 1. Equip the potion
-                                    local equipArgs = {equipString, { ["onlyID"] = potionID }}
-                                    remoteEvent:FireServer(unpack(equipArgs))
-                                    
-                                    -- Wait 0.3s for the server to process the equip
-                                    task.wait(0.3)
-                                    
-                                    -- 2. Gift it away
-                                    local giftArgs = {giftString, targetPlayerId}
-                                    remoteEvent:FireServer(unpack(giftArgs))
-                                    
-                                    -- Short delay before grabbing the next potion to avoid spam kicks
-                                    task.wait(0.3) 
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end)
-    end
-end)
-
--- ==========================================
--- 6. AUTO-REJOIN & COUNTDOWN (56 Minutes)
+-- 5. AUTO-REJOIN & COUNTDOWN (56 Minutes)
 -- ==========================================
 task.spawn(function()
     local minutesLeft = 56
@@ -128,7 +85,7 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 7. MAIN AUTO-FARM (Spawn, Kill, Loot, Return)
+-- 6. MAIN AUTO-FARM (Spawn, Kill, Loot, Return)
 -- ==========================================
 local spawnArgs = {"\229\137\175\230\156\172\229\133\179\229\141\161\229\136\183\230\128\170", 1}
 local pickupArgs = "\230\139\190\229\143\150\230\142\137\232\144\189\231\137\169"
