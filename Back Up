@@ -90,7 +90,7 @@ local itemsToSell = {
     "Hexed Branch", "Eye of the Ice Dragon"
 }
 
-local killTime = 30 
+local killTime = 20 
 local returnWaitTime = 5 
 
 while true do
