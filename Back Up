@@ -44,7 +44,7 @@ end)
 -- 4. AUTO-REJOIN & COUNTDOWN (56 Minutes + Auto-Inventory)
 -- ==========================================
 task.spawn(function()
-    local minutesLeft = 56
+    local minutesLeft = 9999
     local elapsedMinutes = 0
     
     while minutesLeft > 0 do
