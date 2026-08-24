@@ -1,713 +1,156 @@
--- ActionSpySingleScript
--- All-in-one action spy system (Client-side only)
--- Place in: StarterPlayerScripts
-
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
+local VirtualUser = game:GetService("VirtualUser")
+local TeleportService = game:GetService("TeleportService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local remoteEvent = ReplicatedStorage.Msg.RemoteEvent.NetWorkRemoteEvent
+local remoteFunc = ReplicatedStorage.Msg.RemoteFunction.NetWorkRemoteFunction
 
--- CONFIGURATION (all in one place)
-local Config = {
-	UI = {
-		Position = UDim2.new(0.02, 0, 0.1, 0),
-		Size = UDim2.new(0, 380, 0, 500),
-		MinimizedSize = UDim2.new(0, 380, 0, 45),
-		BackgroundColor = Color3.fromRGB(25, 25, 35),
-		HeaderColor = Color3.fromRGB(35, 35, 50),
-		AccentColor = Color3.fromRGB(0, 170, 255),
-		ExitColor = Color3.fromRGB(255, 80, 80),
-		TextColor = Color3.fromRGB(255, 255, 255),
-		SecondaryText = Color3.fromRGB(180, 180, 180),
-		SuccessColor = Color3.fromRGB(0, 255, 100),
-		CornerRadius = 10,
-		Font = Enum.Font.Gotham,
-		TitleFont = Enum.Font.GothamBold
-	},
-	Actions = {
-		Jump = {Enabled = true, Color = Color3.fromRGB(100, 200, 255), Icon = "⬆️"},
-		Dash = {Enabled = true, Color = Color3.fromRGB(255, 200, 100), Icon = "💨"},
-		Click = {Enabled = true, Color = Color3.fromRGB(255, 255, 150), Icon = "🖱️"},
-		ToolEquip = {Enabled = true, Color = Color3.fromRGB(150, 255, 150), Icon = "🛠️"},
-		ToolUnequip = {Enabled = true, Color = Color3.fromRGB(255, 150, 150), Icon = "📦"},
-		Move = {Enabled = false, Color = Color3.fromRGB(200, 200, 200), Icon = "🚶"},
-		Damage = {Enabled = true, Color = Color3.fromRGB(255, 80, 80), Icon = "⚔️"},
-		Death = {Enabled = true, Color = Color3.fromRGB(100, 100, 100), Icon = "💀"}
-	},
-	MaxHistory = 50,
-	DashThreshold = 50
+-- ==========================================
+-- 1. ANTI-AFK SYSTEM
+-- ==========================================
+Players.LocalPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+    print("Anti-AFK triggered to prevent kick!")
+end)
+
+-- ==========================================
+-- 2. AUTO-CLAIM REWARDS
+-- ==========================================
+task.spawn(function()
+    while true do
+        for i = 1, 12 do
+            local args = {"\233\162\134\229\143\150\229\156\168\231\186\191\229\165\150\229\138\177", i}
+            pcall(function() remoteFunc:InvokeServer(unpack(args)) end)
+            task.wait(0.2)
+        end
+        task.wait(60) 
+    end
+end)
+
+-- ==========================================
+-- 3. AUTO-DAMAGE BOOSTER
+-- ==========================================
+task.spawn(function()
+    local damageArgs = {"\232\174\173\231\187\131\231\130\185\229\177\143", {}}
+    while task.wait() do
+        pcall(function() remoteFunc:InvokeServer(unpack(damageArgs)) end)
+    end
+end)
+
+-- ==========================================
+-- 4. AUTO-REJOIN & COUNTDOWN (56 Minutes)
+-- ==========================================
+task.spawn(function()
+    local minutesLeft = 56
+    
+    while minutesLeft > 0 do
+        print("⏳ [AUTO-REJOIN] Time until server reset: " .. tostring(minutesLeft) .. " minutes.")
+        task.wait(60) 
+        minutesLeft = minutesLeft - 1
+    end
+    
+    print("🔄 [AUTO-REJOIN] 56 Minutes reached! Teleporting...")
+    TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
+end)
+
+-- ==========================================
+-- 5. MONEY FARM (Dungeon 28, Kill, Loot, FAST Sell, Return)
+-- ==========================================
+local dungeonArgs = {"\229\133\179\229\141\161\232\183\179\229\133\179\232\175\183\230\177\130", 28}
+local mountArgs = {"\228\184\138\228\184\139\230\137\171\229\184\154"}
+local returnArgs = {"\229\137\175\230\156\172\229\155\158\229\159\142"}
+local pickupArgs = "\230\139\190\229\143\150\230\142\137\232\144\189\231\137\169"
+local sellArgs = "\229\135\186\229\148\174\230\157\144\230\150\153" 
+
+-- Added Eye of the Ice Dragon!
+local itemsToPickup = {
+    "Terrifying Jaws", "Sword Fern", "Plague Mushroom", 
+    "Bog Muck", "Ant Head", "Spirit Leaf", 
+    "Hexed Branch", "Treant Essence", "Eye of the Ice Dragon"
 }
 
--- State variables
-local isMinimized = false
-local isClosed = false
-local actionHistory = {}
-local lastPosition = nil
-local lastTime = 0
-local copyCooldown = false
+-- Target sell list (Treant Essence is safely excluded)
+local itemsToSell = {
+    "Terrifying Jaws", "Sword Fern", "Plague Mushroom", 
+    "Bog Muck", "Ant Head", "Spirit Leaf", 
+    "Hexed Branch", "Eye of the Ice Dragon"
+}
 
--- Script templates for copying
-local scriptTemplates = {
-	Jump = [[-- Jump Detection Script
-local player = game.Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
-local humanoid = character:WaitForChild("Humanoid")
+local killTime = 30 
+local returnWaitTime = 5 
 
-humanoid.Jumping:Connect(function(isActive)
-    if isActive then
-        print("Player jumped!")
-        -- Add jump logic here
-    end
-end)]],
-
-	Dash = [[-- Dash Script (LeftShift to dash)
-local UserInputService = game:GetService("UserInputService")
-local player = game.Players.LocalPlayer
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if not gameProcessed and input.KeyCode == Enum.KeyCode.LeftShift then
-        local character = player.Character
-        if character then
-            local hrp = character:FindFirstChild("HumanoidRootPart")
-            local humanoid = character:FindFirstChild("Humanoid")
-            if hrp and humanoid then
-                hrp.Velocity = humanoid.MoveDirection * 100
+while true do
+    -- 1. Enter Dungeon 28
+    remoteEvent:FireServer(unpack(dungeonArgs))
+    task.wait(1)
+    
+    -- 2. Execute Secondary Action
+    remoteFunc:InvokeServer(unpack(mountArgs))
+    
+    -- 3. Wait for Kill Phase
+    task.wait(killTime)
+    
+    -- 4. Loot Phase
+    local itemsLeftOnGround = true
+    while itemsLeftOnGround do
+        itemsLeftOnGround = false 
+        
+        local dropsClient = workspace:FindFirstChild("DropsClient")
+        if dropsClient then
+            for _, obj in ipairs(dropsClient:GetDescendants()) do
+                if obj:IsA("TextLabel") and obj.Name == "ZhName" then
+                    local itemText = string.lower(obj.Text)
+                    for _, target in ipairs(itemsToPickup) do
+                        if string.find(itemText, string.lower(target)) then
+                            local idFolder = obj.Parent and obj.Parent.Parent and obj.Parent.Parent.Parent
+                            if idFolder and tonumber(idFolder.Name) then
+                                local args = {pickupArgs, tostring(idFolder.Name)}
+                                remoteEvent:FireServer(unpack(args))
+                                itemsLeftOnGround = true 
+                            end
+                        end
+                    end
+                end
             end
         end
+        task.wait(0.5) 
     end
-end)]],
-
-	Click = [[-- Click Detection Script
-local player = game.Players.LocalPlayer
-local mouse = player:GetMouse()
-
-mouse.Button1Down:Connect(function()
-    print("Clicked at:", mouse.Hit.Position)
-end)]],
-
-	ToolEquip = [[-- Tool Equip Detection
-local player = game.Players.LocalPlayer
-
-local function setupCharacter(character)
-    character.ChildAdded:Connect(function(child)
-        if child:IsA("Tool") then
-            print("Equipped:", child.Name)
+    
+    -- 5. FAST Bulk Sell Phase
+    pcall(function()
+        local bulkSellList = {} 
+        
+        -- Scan bags and gather all IDs
+        for _, obj in ipairs(Players.LocalPlayer.PlayerGui:GetDescendants()) do
+            if obj:IsA("TextLabel") then
+                local itemText = string.lower(obj.Text)
+                for _, target in ipairs(itemsToSell) do
+                    if string.find(itemText, string.lower(target)) then
+                        local frame = obj.Parent
+                        if frame then
+                            local itemID = frame:GetAttribute("OnlyID")
+                            if itemID then
+                                -- Add it to our array
+                                table.insert(bulkSellList, tonumber(itemID))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        
+        -- Instantly sell the entire list at once using the newly discovered 'onlyIDList' format!
+        if #bulkSellList > 0 then
+            local payload = { ["onlyIDList"] = bulkSellList }
+            remoteFunc:InvokeServer(sellArgs, payload)
+            print("💰 Bulk sold " .. tostring(#bulkSellList) .. " items instantly!")
         end
     end)
+    
+    -- 6. Return and Reset
+    remoteEvent:FireServer(unpack(returnArgs))
+    task.wait(returnWaitTime)
 end
-
-if player.Character then setupCharacter(player.Character) end
-player.CharacterAdded:Connect(setupCharacter)]],
-
-	ToolUnequip = [[-- Tool Unequip Detection
-local player = game.Players.LocalPlayer
-
-local function setupCharacter(character)
-    character.ChildRemoved:Connect(function(child)
-        if child:IsA("Tool") then
-            print("Unequipped:", child.Name)
-        end
-    end)
-end
-
-if player.Character then setupCharacter(player.Character) end
-player.CharacterAdded:Connect(setupCharacter)]],
-
-	Damage = [[-- Damage Detection
-local player = game.Players.LocalPlayer
-
-local function setupCharacter(character)
-    local humanoid = character:WaitForChild("Humanoid")
-    humanoid.HealthChanged:Connect(function(newHealth)
-        if newHealth < humanoid.Health then
-            print("Took damage:", humanoid.Health - newHealth)
-        end
-    end)
-end
-
-if player.Character then setupCharacter(player.Character) end
-player.CharacterAdded:Connect(setupCharacter)]],
-
-	Death = [[-- Death Detection
-local player = game.Players.LocalPlayer
-
-local function setupCharacter(character)
-    local humanoid = character:WaitForChild("Humanoid")
-    humanoid.Died:Connect(function()
-        print("Player died!")
-    end)
-end
-
-if player.Character then setupCharacter(player.Character) end
-player.CharacterAdded:Connect(setupCharacter)]]
-}
-
--- Create UI
-local function createUI()
-	if playerGui:FindFirstChild("ActionSpySingle") then
-		playerGui.ActionSpySingle:Destroy()
-	end
-	
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "ActionSpySingle"
-	screenGui.ResetOnSpawn = false
-	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	screenGui.Parent = playerGui
-	
-	-- Main Frame
-	local mainFrame = Instance.new("Frame")
-	mainFrame.Name = "MainFrame"
-	mainFrame.Size = Config.UI.Size
-	mainFrame.Position = Config.UI.Position
-	mainFrame.BackgroundColor3 = Config.UI.BackgroundColor
-	mainFrame.BorderSizePixel = 0
-	mainFrame.ClipsDescendants = true
-	mainFrame.Parent = screenGui
-	
-	-- Rounded corners
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, Config.UI.CornerRadius)
-	corner.Parent = mainFrame
-	
-	-- Shadow
-	local shadow = Instance.new("ImageLabel")
-	shadow.Name = "Shadow"
-	shadow.AnchorPoint = Vector2.new(0.5, 0.5)
-	shadow.Position = UDim2.new(0.5, 0, 0.5, 4)
-	shadow.Size = UDim2.new(1, 20, 1, 20)
-	shadow.BackgroundTransparency = 1
-	shadow.Image = "rbxassetid://1316045210"
-	shadow.ImageColor3 = Color3.new(0, 0, 0)
-	shadow.ImageTransparency = 0.6
-	shadow.ScaleType = Enum.ScaleType.Slice
-	shadow.SliceCenter = Rect.new(10, 10, 118, 118)
-	shadow.ZIndex = -1
-	shadow.Parent = mainFrame
-	
-	-- Header
-	local header = Instance.new("Frame")
-	header.Name = "Header"
-	header.Size = UDim2.new(1, 0, 0, 45)
-	header.BackgroundColor3 = Config.UI.HeaderColor
-	header.BorderSizePixel = 0
-	header.Parent = mainFrame
-	
-	local headerCorner = Instance.new("UICorner")
-	headerCorner.CornerRadius = UDim.new(0, Config.UI.CornerRadius)
-	headerCorner.Parent = header
-	
-	-- Bottom fill for header
-	local headerFill = Instance.new("Frame")
-	headerFill.Size = UDim2.new(1, 0, 0.5, 0)
-	headerFill.Position = UDim2.new(0, 0, 0.5, 0)
-	headerFill.BackgroundColor3 = Config.UI.HeaderColor
-	headerFill.BorderSizePixel = 0
-	headerFill.Parent = header
-	
-	-- Title
-	local title = Instance.new("TextLabel")
-	title.Name = "Title"
-	title.Size = UDim2.new(0.5, 0, 1, 0)
-	title.Position = UDim2.new(0.05, 0, 0, 0)
-	title.BackgroundTransparency = 1
-	title.Text = "🔍 Action Spy"
-	title.TextColor3 = Config.UI.TextColor
-	title.TextSize = 18
-	title.Font = Config.UI.TitleFont
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Parent = header
-	
-	-- Action count
-	local countLabel = Instance.new("TextLabel")
-	countLabel.Name = "CountLabel"
-	countLabel.Size = UDim2.new(0.2, 0, 1, 0)
-	countLabel.Position = UDim2.new(0.5, 0, 0, 0)
-	countLabel.BackgroundTransparency = 1
-	countLabel.Text = "0 actions"
-	countLabel.TextColor3 = Config.UI.SecondaryText
-	countLabel.TextSize = 12
-	countLabel.Font = Config.UI.Font
-	countLabel.TextXAlignment = Enum.TextXAlignment.Right
-	countLabel.Parent = header
-	
-	-- Button container
-	local buttonContainer = Instance.new("Frame")
-	buttonContainer.Name = "ButtonContainer"
-	buttonContainer.Size = UDim2.new(0, 80, 1, 0)
-	buttonContainer.Position = UDim2.new(1, -90, 0, 0)
-	buttonContainer.BackgroundTransparency = 1
-	buttonContainer.Parent = header
-	
-	-- Minimize button
-	local minButton = Instance.new("TextButton")
-	minButton.Name = "MinimizeButton"
-	minButton.Size = UDim2.new(0, 35, 0, 35)
-	minButton.Position = UDim2.new(0, 0, 0.5, -17.5)
-	minButton.BackgroundColor3 = Config.UI.AccentColor
-	minButton.Text = "−"
-	minButton.TextColor3 = Config.UI.TextColor
-	minButton.TextSize = 24
-	minButton.Font = Config.UI.TitleFont
-	minButton.Parent = buttonContainer
-	
-	local minCorner = Instance.new("UICorner")
-	minCorner.CornerRadius = UDim.new(0, 6)
-	minCorner.Parent = minButton
-	
-	-- Exit button
-	local exitButton = Instance.new("TextButton")
-	exitButton.Name = "ExitButton"
-	exitButton.Size = UDim2.new(0, 35, 0, 35)
-	exitButton.Position = UDim2.new(0, 40, 0.5, -17.5)
-	exitButton.BackgroundColor3 = Config.UI.ExitColor
-	exitButton.Text = "✕"
-	exitButton.TextColor3 = Config.UI.TextColor
-	exitButton.TextSize = 18
-	exitButton.Font = Config.UI.TitleFont
-	exitButton.Parent = buttonContainer
-	
-	local exitCorner = Instance.new("UICorner")
-	exitCorner.CornerRadius = UDim.new(0, 6)
-	exitCorner.Parent = exitButton
-	
-	-- Content frame
-	local contentFrame = Instance.new("Frame")
-	contentFrame.Name = "Content"
-	contentFrame.Size = UDim2.new(1, -20, 1, -55)
-	contentFrame.Position = UDim2.new(0, 10, 0, 50)
-	contentFrame.BackgroundTransparency = 1
-	contentFrame.Parent = mainFrame
-	
-	-- Empty state
-	local emptyLabel = Instance.new("TextLabel")
-	emptyLabel.Name = "EmptyState"
-	emptyLabel.Size = UDim2.new(1, 0, 1, 0)
-	emptyLabel.BackgroundTransparency = 1
-	emptyLabel.Text = "Waiting for actions...\n\nJump, dash, or click to see them here!"
-	emptyLabel.TextColor3 = Config.UI.SecondaryText
-	emptyLabel.TextSize = 14
-	emptyLabel.Font = Config.UI.Font
-	emptyLabel.TextWrapped = true
-	emptyLabel.Parent = contentFrame
-	
-	-- Scrolling list
-	local actionList = Instance.new("ScrollingFrame")
-	actionList.Name = "ActionList"
-	actionList.Size = UDim2.new(1, 0, 1, 0)
-	actionList.BackgroundTransparency = 1
-	actionList.ScrollBarThickness = 4
-	actionList.ScrollBarImageColor3 = Config.UI.AccentColor
-	actionList.ScrollingDirection = Enum.ScrollingDirection.Y
-	actionList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	actionList.CanvasSize = UDim2.new(0, 0, 0, 0)
-	actionList.Visible = false
-	actionList.Parent = contentFrame
-	
-	local listLayout = Instance.new("UIListLayout")
-	listLayout.Padding = UDim.new(0, 8)
-	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	listLayout.Parent = actionList
-	
-	-- Reopen button (shown when closed)
-	local reopenButton = Instance.new("TextButton")
-	reopenButton.Name = "ReopenButton"
-	reopenButton.Size = UDim2.new(0, 50, 0, 50)
-	reopenButton.Position = UDim2.new(0, 20, 0, 20)
-	reopenButton.BackgroundColor3 = Config.UI.AccentColor
-	reopenButton.Text = "🔍"
-	reopenButton.TextSize = 24
-	reopenButton.Visible = false
-	reopenButton.Parent = screenGui
-	
-	local reopenCorner = Instance.new("UICorner")
-	reopenCorner.CornerRadius = UDim.new(1, 0) -- Circle
-	reopenCorner.Parent = reopenButton
-	
-	local reopenShadow = Instance.new("ImageLabel")
-	reopenShadow.AnchorPoint = Vector2.new(0.5, 0.5)
-	reopenShadow.Position = UDim2.new(0.5, 0, 0.5, 3)
-	reopenShadow.Size = UDim2.new(1, 15, 1, 15)
-	reopenShadow.BackgroundTransparency = 1
-	reopenShadow.Image = "rbxassetid://1316045210"
-	reopenShadow.ImageColor3 = Color3.new(0, 0, 0)
-	reopenShadow.ImageTransparency = 0.7
-	reopenShadow.ScaleType = Enum.ScaleType.Slice
-	reopenShadow.SliceCenter = Rect.new(10, 10, 118, 118)
-	reopenShadow.ZIndex = -1
-	reopenShadow.Parent = reopenButton
-	
-	-- Button functionality
-	minButton.MouseButton1Click:Connect(function()
-		isMinimized = not isMinimized
-		if isMinimized then
-			TweenService:Create(mainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart), {
-				Size = Config.UI.MinimizedSize
-			}):Play()
-			minButton.Text = "+"
-			contentFrame.Visible = false
-		else
-			TweenService:Create(mainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart), {
-				Size = Config.UI.Size
-			}):Play()
-			minButton.Text = "−"
-			contentFrame.Visible = true
-		end
-	end)
-	
-	exitButton.MouseButton1Click:Connect(function()
-		isClosed = true
-		TweenService:Create(mainFrame, TweenInfo.new(0.3), {
-			Size = UDim2.new(0, 0, 0, 0),
-			Position = UDim2.new(mainFrame.Position.X.Scale, mainFrame.Position.X.Offset + 190, mainFrame.Position.Y.Scale, mainFrame.Position.Y.Offset + 250)
-		}):Play()
-		delay(0.3, function()
-			mainFrame.Visible = false
-			reopenButton.Visible = true
-			TweenService:Create(reopenButton, TweenInfo.new(0.3), {Size = UDim2.new(0, 50, 0, 50)}):Play()
-		end)
-	end)
-	
-	reopenButton.MouseButton1Click:Connect(function()
-		isClosed = false
-		mainFrame.Visible = true
-		TweenService:Create(reopenButton, TweenInfo.new(0.2), {Size = UDim2.new(0, 0, 0, 0)}):Play()
-		delay(0.2, function()
-			reopenButton.Visible = false
-			TweenService:Create(mainFrame, TweenInfo.new(0.3), {
-				Size = isMinimized and Config.UI.MinimizedSize or Config.UI.Size,
-				Position = Config.UI.Position
-			}):Play()
-			if not isMinimized then
-				contentFrame.Visible = true
-			end
-		end)
-	end)
-	
-	-- Drag functionality
-	local dragging = false
-	local dragInput, dragStart, startPos
-	
-	header.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			dragStart = input.Position
-			startPos = mainFrame.Position
-		end
-	end)
-	
-	header.InputChanged:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-			dragInput = input
-		end
-	end)
-	
-	UserInputService.InputChanged:Connect(function(input)
-		if input == dragInput and dragging then
-			local delta = input.Position - dragStart
-			mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-		end
-	end)
-	
-	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-		end
-	end)
-	
-	return {
-		mainFrame = mainFrame,
-		actionList = actionList,
-		emptyLabel = emptyLabel,
-		countLabel = countLabel,
-		template = nil
-	}
-end
-
--- Create action entry template
-local function createTemplate()
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.new(1, -10, 0, 90)
-	frame.BackgroundColor3 = Config.UI.HeaderColor
-	frame.BorderSizePixel = 0
-	
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 8)
-	corner.Parent = frame
-	
-	-- Color bar
-	local colorBar = Instance.new("Frame")
-	colorBar.Name = "ColorBar"
-	colorBar.Size = UDim2.new(0, 4, 1, 0)
-	colorBar.BackgroundColor3 = Config.UI.AccentColor
-	colorBar.BorderSizePixel = 0
-	colorBar.Parent = frame
-	
-	local barCorner = Instance.new("UICorner")
-	barCorner.CornerRadius = UDim.new(0, 8)
-	barCorner.Parent = colorBar
-	
-	-- Icon
-	local icon = Instance.new("TextLabel")
-	icon.Name = "Icon"
-	icon.Size = UDim2.new(0, 30, 0, 30)
-	icon.Position = UDim2.new(0, 12, 0, 10)
-	icon.BackgroundTransparency = 1
-	icon.Text = "⚡"
-	icon.TextSize = 20
-	icon.Parent = frame
-	
-	-- Title
-	local title = Instance.new("TextLabel")
-	title.Name = "Title"
-	title.Size = UDim2.new(0.5, 0, 0, 20)
-	title.Position = UDim2.new(0, 48, 0, 10)
-	title.BackgroundTransparency = 1
-	title.Text = "Action"
-	title.TextColor3 = Config.UI.TextColor
-	title.TextSize = 14
-	title.Font = Config.UI.TitleFont
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Parent = frame
-	
-	-- Time
-	local time = Instance.new("TextLabel")
-	time.Name = "Time"
-	time.Size = UDim2.new(0.3, 0, 0, 20)
-	time.Position = UDim2.new(0.65, 0, 0, 10)
-	time.BackgroundTransparency = 1
-	time.Text = "12:34:56"
-	time.TextColor3 = Config.UI.SecondaryText
-	time.TextSize = 11
-	time.Font = Config.UI.Font
-	time.TextXAlignment = Enum.TextXAlignment.Right
-	time.Parent = frame
-	
-	-- Description
-	local desc = Instance.new("TextLabel")
-	desc.Name = "Description"
-	desc.Size = UDim2.new(1, -60, 0, 20)
-	desc.Position = UDim2.new(0, 48, 0, 32)
-	desc.BackgroundTransparency = 1
-	desc.Text = "Description here"
-	desc.TextColor3 = Config.UI.SecondaryText
-	desc.TextSize = 12
-	desc.Font = Config.UI.Font
-	desc.TextXAlignment = Enum.TextXAlignment.Left
-	desc.TextWrapped = true
-	desc.Parent = frame
-	
-	-- Copy button
-	local copyBtn = Instance.new("TextButton")
-	copyBtn.Name = "CopyBtn"
-	copyBtn.Size = UDim2.new(0, 100, 0, 28)
-	copyBtn.Position = UDim2.new(0, 48, 1, -35)
-	copyBtn.BackgroundColor3 = Config.UI.AccentColor
-	copyBtn.Text = "📋 Copy Script"
-	copyBtn.TextColor3 = Config.UI.TextColor
-	copyBtn.TextSize = 11
-	copyBtn.Font = Config.UI.Font
-	copyBtn.Parent = frame
-	
-	local copyCorner = Instance.new("UICorner")
-	copyCorner.CornerRadius = UDim.new(0, 6)
-	copyCorner.Parent = copyBtn
-	
-	-- Position label
-	local pos = Instance.new("TextLabel")
-	pos.Name = "Position"
-	pos.Size = UDim2.new(0.4, 0, 0, 20)
-	pos.Position = UDim2.new(0.55, 0, 1, -30)
-	pos.BackgroundTransparency = 1
-	pos.Text = "0, 0, 0"
-	pos.TextColor3 = Config.UI.SecondaryText
-	pos.TextSize = 10
-	pos.Font = Config.UI.Font
-	pos.TextXAlignment = Enum.TextXAlignment.Right
-	pos.Parent = frame
-	
-	return frame
-end
-
--- Format time
-local function formatTime()
-	local t = os.date("*t")
-	return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
-end
-
--- Copy function
-local function copyScript(text, button)
-	if copyCooldown then return end
-	copyCooldown = true
-	
-	-- Print to console for copying
-	print("\n========== COPY THIS SCRIPT ==========\n")
-	print(text)
-	print("\n======================================\n")
-	
-	button.Text = "✅ Copied!"
-	button.BackgroundColor3 = Config.UI.SuccessColor
-	
-	delay(2, function()
-		if button and button.Parent then
-			button.Text = "📋 Copy Script"
-			button.BackgroundColor3 = Config.UI.AccentColor
-		end
-	end)
-	
-	delay(0.5, function()
-		copyCooldown = false
-	end)
-end
-
--- Add action to UI
-local function addAction(ui, actionType, data)
-	local actionConfig = Config.Actions[actionType]
-	if not actionConfig or not actionConfig.Enabled then return end
-	
-	-- Hide empty state
-	ui.actionList.Visible = true
-	ui.emptyLabel.Visible = false
-	
-	-- Create entry
-	local entry = createTemplate()
-	entry.LayoutOrder = -tick()
-	entry.ColorBar.BackgroundColor3 = actionConfig.Color
-	entry.Icon.Text = actionConfig.Icon
-	entry.Title.Text = actionType
-	entry.Title.TextColor3 = actionConfig.Color
-	entry.Time.Text = formatTime()
-	entry.Description.Text = data.Description or actionType .. " detected"
-	entry.Position.Text = data.Position and string.format("%.1f, %.1f, %.1f", data.Position.X, data.Position.Y, data.Position.Z) or "N/A"
-	
-	-- Copy button
-	local scriptCode = scriptTemplates[actionType] or "-- No template for " .. actionType
-	entry.CopyBtn.MouseButton1Click:Connect(function()
-		copyScript(scriptCode, entry.CopyBtn)
-	end)
-	
-	entry.Parent = ui.actionList
-	
-	-- Animate in
-	entry.BackgroundTransparency = 1
-	entry.Size = UDim2.new(1, -10, 0, 0)
-	TweenService:Create(entry, TweenInfo.new(0.3), {
-		BackgroundTransparency = 0,
-		Size = UDim2.new(1, -10, 0, 90)
-	}):Play()
-	
-	-- Update count
-	table.insert(actionHistory, 1, actionType)
-	if #actionHistory > Config.MaxHistory then
-		table.remove(actionHistory)
-		-- Remove oldest UI entry
-		for _, child in pairs(ui.actionList:GetChildren()) do
-			if child:IsA("Frame") and child.Name ~= "UIListLayout" then
-				TweenService:Create(child, TweenInfo.new(0.2), {
-					BackgroundTransparency = 1,
-					Size = UDim2.new(1, -10, 0, 0)
-				}):Play()
-				game:GetService("Debris"):AddItem(child, 0.2)
-				break
-			end
-		end
-	end
-	
-	ui.countLabel.Text = #actionHistory .. " action" .. (#actionHistory == 1 and "" or "s")
-end
-
--- Setup detection
-local function setupDetection(ui)
-	local character = player.Character or player.CharacterAdded:Wait()
-	local humanoid = character:WaitForChild("Humanoid")
-	local rootPart = character:WaitForChild("HumanoidRootPart")
-	
-	lastPosition = rootPart.Position
-	lastTime = tick()
-	
-	-- Jump detection
-	humanoid.Jumping:Connect(function(isActive)
-		if isActive then
-			addAction(ui, "Jump", {
-				Description = "Player jumped!",
-				Position = rootPart.Position
-			})
-		end
-	end)
-	
-	-- Dash detection (speed check)
-	RunService.Heartbeat:Connect(function()
-		if not character or not rootPart then return end
-		
-		local now = tick()
-		if now - lastTime >= 0.1 then
-			local distance = (rootPart.Position - lastPosition).Magnitude
-			local speed = distance / (now - lastTime)
-			
-			if speed > Config.DashThreshold and humanoid.MoveDirection.Magnitude > 0 then
-				addAction(ui, "Dash", {
-					Description = "Dashed at " .. math.floor(speed) .. " studs/s",
-					Position = rootPart.Position
-				})
-			end
-			
-			lastPosition = rootPart.Position
-			lastTime = now
-		end
-	end)
-	
-	-- Tool detection
-	character.ChildAdded:Connect(function(child)
-		if child:IsA("Tool") then
-			addAction(ui, "ToolEquip", {
-				Description = "Equipped: " .. child.Name,
-				Position = rootPart.Position
-			})
-		end
-	end)
-	
-	character.ChildRemoved:Connect(function(child)
-		if child:IsA("Tool") then
-			addAction(ui, "ToolUnequip", {
-				Description = "Unequipped: " .. child.Name,
-				Position = rootPart.Position
-			})
-		end
-	end)
-	
-	-- Damage detection
-	humanoid.HealthChanged:Connect(function(newHealth)
-		if newHealth < humanoid.Health then
-			addAction(ui, "Damage", {
-				Description = "Took " .. math.floor(humanoid.Health - newHealth) .. " damage",
-				Position = rootPart.Position
-			})
-		end
-	end)
-	
-	-- Death detection
-	humanoid.Died:Connect(function()
-		addAction(ui, "Death", {
-			Description = "Player died",
-			Position = rootPart.Position
-		})
-	end)
-	
-	-- Click detection
-	local mouse = player:GetMouse()
-	mouse.Button1Down:Connect(function()
-		addAction(ui, "Click", {
-			Description = "Left click at mouse position",
-			Position = mouse.Hit.Position
-		})
-	end)
-end
-
--- Initialize
-local ui = createUI()
-setupDetection(ui)
-
-print("✅ ActionSpySingleScript loaded!")
-print("🔍 UI Ready - Try jumping or clicking!")
