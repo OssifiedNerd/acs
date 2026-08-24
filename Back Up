@@ -41,15 +41,28 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 4. AUTO-REJOIN & COUNTDOWN (56 Minutes)
+-- 4. AUTO-REJOIN & COUNTDOWN (56 Minutes + Auto-Inventory)
 -- ==========================================
 task.spawn(function()
     local minutesLeft = 56
+    local elapsedMinutes = 0
     
     while minutesLeft > 0 do
         print("⏳ [AUTO-REJOIN] Time until server reset: " .. tostring(minutesLeft) .. " minutes.")
+        
+        if elapsedMinutes == 2 then
+            pcall(function()
+                local inventoryKey = Enum.KeyCode.Backquote
+                VirtualInputManager:SendKeyEvent(true, inventoryKey, false, game)
+                task.wait(0.05)
+                VirtualInputManager:SendKeyEvent(false, inventoryKey, false, game)
+                print("🎒 [AUTO-INVENTORY] Toggled inventory open at minute 2!")
+            end)
+        end
+        
         task.wait(60) 
         minutesLeft = minutesLeft - 1
+        elapsedMinutes = elapsedMinutes + 1
     end
     
     print("🔄 [AUTO-REJOIN] 56 Minutes reached! Teleporting...")
@@ -65,14 +78,12 @@ local returnArgs = {"\229\137\175\230\156\172\229\155\158\229\159\142"}
 local pickupArgs = "\230\139\190\229\143\150\230\142\137\232\144\189\231\137\169"
 local sellArgs = "\229\135\186\229\148\174\230\157\144\230\150\153" 
 
--- Added Eye of the Ice Dragon!
 local itemsToPickup = {
     "Terrifying Jaws", "Sword Fern", "Plague Mushroom", 
     "Bog Muck", "Ant Head", "Spirit Leaf", 
     "Hexed Branch", "Treant Essence", "Eye of the Ice Dragon"
 }
 
--- Target sell list (Treant Essence is safely excluded)
 local itemsToSell = {
     "Terrifying Jaws", "Sword Fern", "Plague Mushroom", 
     "Bog Muck", "Ant Head", "Spirit Leaf", 
@@ -123,7 +134,6 @@ while true do
     pcall(function()
         local bulkSellList = {} 
         
-        -- Scan bags and gather all IDs
         for _, obj in ipairs(Players.LocalPlayer.PlayerGui:GetDescendants()) do
             if obj:IsA("TextLabel") then
                 local itemText = string.lower(obj.Text)
@@ -133,7 +143,6 @@ while true do
                         if frame then
                             local itemID = frame:GetAttribute("OnlyID")
                             if itemID then
-                                -- Add it to our array
                                 table.insert(bulkSellList, tonumber(itemID))
                             end
                         end
@@ -142,7 +151,6 @@ while true do
             end
         end
         
-        -- Instantly sell the entire list at once using the newly discovered 'onlyIDList' format!
         if #bulkSellList > 0 then
             local payload = { ["onlyIDList"] = bulkSellList }
             remoteFunc:InvokeServer(sellArgs, payload)
