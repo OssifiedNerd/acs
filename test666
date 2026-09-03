@@ -56,20 +56,18 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 5. AUTO-POTION DRINKER (Drink -> Wait 5s -> Change Slot)
+-- 5. AUTO-POTION DRINKER
 -- ==========================================
 task.spawn(function()
     local drinkString = "\228\189\191\231\148\168\232\141\175\230\176\180"
     local selectSlotString = "\232\174\190\231\189\174\230\167\189\228\189\141"
     
-    -- Helper function to quickly grab a potion's dynamic ID
     local function getPotionID(potionName)
         for _, obj in ipairs(Players.LocalPlayer.PlayerGui:GetDescendants()) do
             if obj:IsA("TextLabel") and string.find(string.lower(obj.Text), string.lower(potionName)) then
                 local frame = obj.Parent
                 if frame then
                     local id = frame:GetAttribute("OnlyID")
-                    -- CRITICAL FIX: Only stop searching if we actually found a valid ID!
                     if id then
                         return id
                     end
@@ -86,10 +84,7 @@ task.spawn(function()
             if fireID then
                 print("🔥 Found Fire Arrow! Drinking ID: " .. tostring(fireID))
                 remoteFunc:InvokeServer(drinkString, { ["onlyID"] = fireID })
-                
-                -- Wait for 5-second drinking animation
                 task.wait(4.1) 
-                
                 print("🔄 Swapping slot to cancel Fire Arrow cooldown...")
                 remoteFunc:InvokeServer(selectSlotString, { ["slotIndex"] = 2 })
                 task.wait(0.5) 
@@ -100,23 +95,18 @@ task.spawn(function()
             if twilightID then
                 print("🌀 Found Twilight Spiral! Drinking ID: " .. tostring(twilightID))
                 remoteFunc:InvokeServer(drinkString, { ["onlyID"] = twilightID })
-                
-                -- Wait for 5-second drinking animation
                 task.wait(4.1) 
-                
                 print("🔄 Swapping slot to cancel Twilight Spiral cooldown...")
                 remoteFunc:InvokeServer(selectSlotString, { ["slotIndex"] = 2 })
                 task.wait(0.5) 
             end
         end)
-        
-        -- Short wait before scanning bags again
         task.wait(1) 
     end
 end)
 
 -- ==========================================
--- 6. AUTO-REJOIN & COUNTDOWN (51 Minutes)
+-- 6. AUTO-REJOIN (56 Minutes - SAME SERVER FIX)
 -- ==========================================
 task.spawn(function()
     local minutesLeft = 51
