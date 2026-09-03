@@ -116,10 +116,10 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 6. AUTO-REJOIN & COUNTDOWN (56 Minutes)
+-- 6. AUTO-REJOIN & COUNTDOWN (51 Minutes)
 -- ==========================================
 task.spawn(function()
-    local minutesLeft = 56
+    local minutesLeft = 51
     local elapsedMinutes = 0
     
     while minutesLeft > 0 do
@@ -140,8 +140,8 @@ task.spawn(function()
         elapsedMinutes = elapsedMinutes + 1
     end
     
-    print("🔄 [AUTO-REJOIN] 56 Minutes reached! Teleporting...")
-    TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
+    print("🔄 [AUTO-REJOIN] 56 Minutes reached! Rejoining SAME server...")
+    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, Players.LocalPlayer)
 end)
 
 -- ==========================================
