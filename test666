@@ -3,17 +3,107 @@ local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
 local TeleportService = game:GetService("TeleportService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local RunService = game:GetService("RunService")
+local GuiService = game:GetService("GuiService")
 
+local player = Players.LocalPlayer
 local remoteEvent = ReplicatedStorage.Msg.RemoteEvent.NetWorkRemoteEvent
 local remoteFunc = ReplicatedStorage.Msg.RemoteFunction.NetWorkRemoteFunction
+
+local lockedCFrame = nil
+
+-- Lock position exactly 10 seconds after script executes to give you time to spawn
+task.delay(10, function()
+    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        lockedCFrame = player.Character.HumanoidRootPart.CFrame
+        print("📍 [ANTI-TP] Locked farm coordinates!")
+    end
+end)
 
 -- ==========================================
 -- 1. ANTI-AFK SYSTEM
 -- ==========================================
-Players.LocalPlayer.Idled:Connect(function()
+player.Idled:Connect(function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
-    print("Anti-AFK triggered to prevent kick!")
+    print("🛡️ Anti-AFK triggered to prevent kick!")
+end)
+
+-- ==========================================
+-- 1.5. HEARTBEAT ANTI-TP, CAMERA LOCK & KEYBOARD AUTO-SKIP
+-- ==========================================
+RunService.Heartbeat:Connect(function()
+    -- 1. Anti-TP: Instantly snap back if moved
+    if lockedCFrame and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        local hrp = player.Character.HumanoidRootPart
+        if (hrp.Position - lockedCFrame.Position).Magnitude > 5 then
+            hrp.CFrame = lockedCFrame
+        end
+    end
+    
+    -- 2. Anti-Camera Hijack: Force camera to stay on your character
+    local camera = workspace.CurrentCamera
+    if camera.CameraType ~= Enum.CameraType.Custom then
+        camera.CameraType = Enum.CameraType.Custom
+        if player.Character and player.Character:FindFirstChild("Humanoid") then
+            camera.CameraSubject = player.Character.Humanoid
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.1) do
+        pcall(function()
+            for _, obj in ipairs(player.PlayerGui:GetDescendants()) do
+                if obj:IsA("GuiButton") and obj.Visible then
+                    local isSkipButton = false
+                    
+                    -- Check if button or its children have the text "Skip"
+                    pcall(function()
+                        if obj.Text and string.find(string.lower(obj.Text), "skip") then isSkipButton = true end
+                    end)
+                    if not isSkipButton then
+                        for _, child in ipairs(obj:GetChildren()) do
+                            if child:IsA("TextLabel") and child.Text and string.find(string.lower(child.Text), "skip") then
+                                isSkipButton = true
+                            end
+                        end
+                    end
+                    
+                    if isSkipButton then
+                        -- Method 1: Executor Force-Fire (All possible click types)
+                        if firesignal then
+                            pcall(function() firesignal(obj.MouseButton1Click) end)
+                            pcall(function() firesignal(obj.MouseButton1Down) end)
+                            pcall(function() firesignal(obj.MouseButton1Up) end)
+                            pcall(function() firesignal(obj.Activated) end)
+                        end
+                        
+                        if getconnections then
+                            local events = {"MouseButton1Click", "MouseButton1Down", "MouseButton1Up", "Activated"}
+                            for _, evt in ipairs(events) do
+                                pcall(function()
+                                    for _, conn in ipairs(getconnections(obj[evt])) do conn:Function() end
+                                end)
+                            end
+                        end
+                        
+                        -- Method 2: THE KEYBOARD BYPASS (100% Native Roblox GUI interaction)
+                        -- Highlights the skip button and forces the "Enter" key to press it
+                        GuiService.SelectedObject = obj
+                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                        task.wait(0.01)
+                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+                        
+                        -- Deselect after pressing
+                        GuiService.SelectedObject = nil 
+                        
+                        print("⏭️ Keyboard Auto-Skip Triggered!")
+                    end
+                end
+            end
+        end)
+    end
 end)
 
 -- ==========================================
@@ -63,14 +153,12 @@ task.spawn(function()
     local selectSlotString = "\232\174\190\231\189\174\230\167\189\228\189\141"
     
     local function getPotionID(potionName)
-        for _, obj in ipairs(Players.LocalPlayer.PlayerGui:GetDescendants()) do
+        for _, obj in ipairs(player.PlayerGui:GetDescendants()) do
             if obj:IsA("TextLabel") and string.find(string.lower(obj.Text), string.lower(potionName)) then
                 local frame = obj.Parent
                 if frame then
                     local id = frame:GetAttribute("OnlyID")
-                    if id then
-                        return id
-                    end
+                    if id then return id end
                 end
             end
         end
@@ -82,10 +170,8 @@ task.spawn(function()
             -- Step 1: Fire Arrow Potion
             local fireID = getPotionID("Fire Arrow")
             if fireID then
-                print("🔥 Found Fire Arrow! Drinking ID: " .. tostring(fireID))
                 remoteFunc:InvokeServer(drinkString, { ["onlyID"] = fireID })
                 task.wait(4.1) 
-                print("🔄 Swapping slot to cancel Fire Arrow cooldown...")
                 remoteFunc:InvokeServer(selectSlotString, { ["slotIndex"] = 2 })
                 task.wait(0.5) 
             end
@@ -93,10 +179,8 @@ task.spawn(function()
             -- Step 2: Twilight Spiral Potion
             local twilightID = getPotionID("Twilight Spiral")
             if twilightID then
-                print("🌀 Found Twilight Spiral! Drinking ID: " .. tostring(twilightID))
                 remoteFunc:InvokeServer(drinkString, { ["onlyID"] = twilightID })
                 task.wait(4.1) 
-                print("🔄 Swapping slot to cancel Twilight Spiral cooldown...")
                 remoteFunc:InvokeServer(selectSlotString, { ["slotIndex"] = 2 })
                 task.wait(0.5) 
             end
@@ -106,15 +190,16 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 6. AUTO-REJOIN (56 Minutes - SAME SERVER FIX)
+-- 6. TIMERS (Rejoin & Minute 2 Inventory)
 -- ==========================================
 task.spawn(function()
-    local minutesLeft = 51
+    local minutesLeft = 56
     local elapsedMinutes = 0
     
     while minutesLeft > 0 do
         print("⏳ [AUTO-REJOIN] Time until server reset: " .. tostring(minutesLeft) .. " minutes.")
-        
+
+        -- Minute 2: Toggle inventory open
         if elapsedMinutes == 2 then
             pcall(function()
                 local inventoryKey = Enum.KeyCode.Backquote
@@ -131,7 +216,7 @@ task.spawn(function()
     end
     
     print("🔄 [AUTO-REJOIN] 56 Minutes reached! Rejoining SAME server...")
-    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, Players.LocalPlayer)
+    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
 end)
 
 -- ==========================================
