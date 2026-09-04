@@ -3,21 +3,57 @@ local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
 local TeleportService = game:GetService("TeleportService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local GuiService = game:GetService("GuiService")
 
+local player = Players.LocalPlayer
 local remoteEvent = ReplicatedStorage.Msg.RemoteEvent.NetWorkRemoteEvent
 local remoteFunc = ReplicatedStorage.Msg.RemoteFunction.NetWorkRemoteFunction
 
 -- ==========================================
 -- 1. ANTI-AFK SYSTEM
 -- ==========================================
-Players.LocalPlayer.Idled:Connect(function()
+player.Idled:Connect(function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
-    print("Anti-AFK triggered to prevent kick!")
+    print("🛡️ Anti-AFK triggered to prevent kick!")
 end)
 
 -- ==========================================
--- 2. AUTO-CLAIM REWARDS
+-- 1.5. GENERAL UI AUTO-SKIPPER
+-- ==========================================
+task.spawn(function()
+    while task.wait(0.1) do
+        pcall(function()
+            for _, obj in ipairs(player.PlayerGui:GetDescendants()) do
+                if obj:IsA("GuiButton") and obj.Visible then
+                    local isSkipButton = false
+                    
+                    pcall(function()
+                        if obj.Text and string.find(string.lower(obj.Text), "skip") then isSkipButton = true end
+                    end)
+                    if not isSkipButton then
+                        for _, child in ipairs(obj:GetChildren()) do
+                            if child:IsA("TextLabel") and child.Text and string.find(string.lower(child.Text), "skip") then
+                                isSkipButton = true
+                            end
+                        end
+                    end
+                    
+                    if isSkipButton then
+                        GuiService.SelectedObject = obj
+                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                        task.wait(0.01)
+                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+                        GuiService.SelectedObject = nil 
+                    end
+                end
+            end
+        end)
+    end
+end)
+
+-- ==========================================
+-- 2. AUTO-CLAIM REWARDS & AUTO-DAMAGE
 -- ==========================================
 task.spawn(function()
     while true do
@@ -30,9 +66,6 @@ task.spawn(function()
     end
 end)
 
--- ==========================================
--- 3. AUTO-DAMAGE BOOSTER
--- ==========================================
 task.spawn(function()
     local damageArgs = {"\232\174\173\231\187\131\231\130\185\229\177\143", {}}
     while task.wait() do
@@ -41,22 +74,19 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- 4. AUTO-REJOIN & COUNTDOWN (56 Minutes + Auto-Inventory)
+-- 3. AUTO-REJOIN & COUNTDOWN
 -- ==========================================
 task.spawn(function()
     local minutesLeft = 9999
     local elapsedMinutes = 0
     
     while minutesLeft > 0 do
-        print("⏳ [AUTO-REJOIN] Time until server reset: " .. tostring(minutesLeft) .. " minutes.")
-        
         if elapsedMinutes == 2 then
             pcall(function()
                 local inventoryKey = Enum.KeyCode.Backquote
                 VirtualInputManager:SendKeyEvent(true, inventoryKey, false, game)
                 task.wait(0.05)
                 VirtualInputManager:SendKeyEvent(false, inventoryKey, false, game)
-                print("🎒 [AUTO-INVENTORY] Toggled inventory open at minute 2!")
             end)
         end
         
@@ -65,50 +95,122 @@ task.spawn(function()
         elapsedMinutes = elapsedMinutes + 1
     end
     
-    print("🔄 [AUTO-REJOIN] 56 Minutes reached! Teleporting...")
-    TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
+    print("🔄 [AUTO-REJOIN] Time reached! Teleporting...")
+    TeleportService:Teleport(game.PlaceId, player)
 end)
 
 -- ==========================================
--- 5. MONEY FARM (Dungeon 28, Kill, Loot, FAST Sell, Return)
+-- 4. MONEY FARM (Fast Travel + Chunk Selling)
 -- ==========================================
-local dungeonArgs = {"\229\133\179\229\141\161\232\183\179\229\133\179\232\175\183\230\177\130", 28}
-local mountArgs = {"\228\184\138\228\184\139\230\137\171\229\184\154"}
+local preDungeonArgs = {"\232\131\140\229\140\133\229\183\165\229\133\183\230\160\143\229\136\135\230\141\162\230\137\139\230\140\129", {["uiSlotIndex"] = 1}}
+local dungeonArgs = {"\229\133\179\229\141\161\232\183\179\229\133\179\232\175\183\230\177\130", 33}
 local returnArgs = {"\229\137\175\230\156\172\229\155\158\229\159\142"}
 local pickupArgs = "\230\139\190\229\143\150\230\142\137\232\144\189\231\137\169"
-local sellArgs = "\229\135\186\229\148\174\230\157\144\230\150\153" 
+local sellArgs = "出售材料"
 
 local itemsToPickup = {
-    "Terrifying Jaws", "Sword Fern", "Plague Mushroom", 
-    "Bog Muck", "Ant Head", "Spirit Leaf", 
-    "Hexed Branch", "Treant Essence", "Eye of the Ice Dragon"
+    "Demon Tail", "Demon Horn", "Broken Blade", "Knight Mask", 
+    "Crimson Crystal", "Infernal Rose", "Hellfire", "Nether Fruit",
+    "Treant Essence"
 }
 
 local itemsToSell = {
-    "Terrifying Jaws", "Sword Fern", "Plague Mushroom", 
-    "Bog Muck", "Ant Head", "Spirit Leaf", 
-    "Hexed Branch", "Eye of the Ice Dragon"
+    "Demon Tail", "Demon Horn", "Broken Blade", "Knight Mask", 
+    "Crimson Crystal", "Infernal Rose", "Hellfire", "Treant Essence"
 }
 
 local killTime = 20 
-local returnWaitTime = 5 
+local savedStageCFrame = nil 
+
+local function findItemID(labelObj)
+    local current = labelObj
+    for _ = 1, 6 do
+        if current then
+            local attributes = current:GetAttributes()
+            for k, v in pairs(attributes) do
+                if string.lower(k) == "onlyid" or string.lower(k) == "id" then
+                    return v
+                end
+            end
+            
+            if tonumber(current.Name) and string.len(current.Name) >= 4 then
+                return current.Name
+            end
+            
+            for _, child in ipairs(current:GetChildren()) do
+                if (child:IsA("IntValue") or child:IsA("StringValue") or child:IsA("NumberValue")) 
+                   and (string.lower(child.Name) == "onlyid" or string.lower(child.Name) == "id") then
+                    return child.Value
+                end
+            end
+            current = current.Parent
+        end
+    end
+    return nil
+end
 
 while true do
-    -- 1. Enter Dungeon 28
+    -- 1. Setup & Request Stage
+    remoteEvent:FireServer(unpack(preDungeonArgs))
+    task.wait(0.5)
+    
+    print("🧹 Requesting Stage 33...")
     remoteEvent:FireServer(unpack(dungeonArgs))
-    task.wait(1)
     
-    -- 2. Execute Secondary Action
-    remoteFunc:InvokeServer(unpack(mountArgs))
+    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
     
-    -- 3. Wait for Kill Phase
+    if hrp then
+        if not savedStageCFrame then
+            print("🛫 First Loop: Tracking flight to learn Stage coordinates...")
+            task.wait(3) 
+            
+            local maxWait = 30
+            local elapsed = 0
+            while elapsed < maxWait do
+                local prevPos = hrp.Position
+                task.wait(0.5)
+                elapsed = elapsed + 0.5
+                if (hrp.Position - prevPos).Magnitude < 1 then break end
+            end
+            
+            print("⏳ Arrived! Waiting 5 seconds to ensure we are firmly on the ground...")
+            task.wait(5) -- Adjusted to your 5 second preference
+            savedStageCFrame = hrp.CFrame
+        else
+            print("⚡ Fast Travel: Loading map and teleporting...")
+            task.wait(0.5) 
+            
+            -- Pre-load the area to prevent "Gameplay Paused"
+            pcall(function()
+                player:RequestStreamAroundAsync(savedStageCFrame.Position)
+            end)
+            
+            local endLockTime = tick() + 1.5 
+            while tick() < endLockTime do
+                if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    local currentHRP = player.Character.HumanoidRootPart
+                    currentHRP.CFrame = savedStageCFrame
+                    currentHRP.Velocity = Vector3.new(0, 0, 0) -- Kill weird physics momentum
+                    
+                    -- Force character out of the flying state
+                    local humanoid = player.Character:FindFirstChild("Humanoid")
+                    if humanoid then
+                        humanoid:ChangeState(Enum.HumanoidStateType.Landed)
+                    end
+                end
+                task.wait(0.05)
+            end
+        end
+    end
+    
+    -- 2. Kill Phase
+    print("⚔️ Farming Stage 33 mobs...")
     task.wait(killTime)
     
-    -- 4. Loot Phase
+    -- 3. Loot Phase
     local itemsLeftOnGround = true
     while itemsLeftOnGround do
         itemsLeftOnGround = false 
-        
         local dropsClient = workspace:FindFirstChild("DropsClient")
         if dropsClient then
             for _, obj in ipairs(dropsClient:GetDescendants()) do
@@ -130,21 +232,27 @@ while true do
         task.wait(0.5) 
     end
     
-    -- 5. FAST Bulk Sell Phase
+    -- 4. Return to Town
+    print("📥 Firing Return Remote...")
+    remoteEvent:FireServer(unpack(returnArgs))
+    task.wait(2) 
+
+    -- 5. CHUNK SELLING PHASE
     pcall(function()
         local bulkSellList = {} 
+        local addedIDs = {} 
         
-        for _, obj in ipairs(Players.LocalPlayer.PlayerGui:GetDescendants()) do
-            if obj:IsA("TextLabel") then
+        for _, obj in ipairs(player.PlayerGui:GetDescendants()) do
+            if obj:IsA("TextLabel") and obj.Text and obj.Text ~= "" then
                 local itemText = string.lower(obj.Text)
                 for _, target in ipairs(itemsToSell) do
                     if string.find(itemText, string.lower(target)) then
-                        local frame = obj.Parent
-                        if frame then
-                            local itemID = frame:GetAttribute("OnlyID")
-                            if itemID then
-                                table.insert(bulkSellList, tonumber(itemID))
-                            end
+                        local itemID = findItemID(obj)
+                        local numID = itemID and tonumber(itemID)
+                        
+                        if numID and not addedIDs[numID] then
+                            addedIDs[numID] = true
+                            table.insert(bulkSellList, numID)
                         end
                     end
                 end
@@ -152,13 +260,27 @@ while true do
         end
         
         if #bulkSellList > 0 then
-            local payload = { ["onlyIDList"] = bulkSellList }
-            remoteFunc:InvokeServer(sellArgs, payload)
-            print("💰 Bulk sold " .. tostring(#bulkSellList) .. " items instantly!")
+            print("📦 Found " .. tostring(#bulkSellList) .. " items. Sending to server in chunks of 15...")
+            local batchSize = 15 
+            local successfulBatches = 0
+            
+            for i = 1, #bulkSellList, batchSize do
+                local batch = {}
+                for j = i, math.min(i + batchSize - 1, #bulkSellList) do
+                    table.insert(batch, bulkSellList[j])
+                end
+                
+                local payload = { ["onlyIDList"] = batch }
+                remoteFunc:InvokeServer(sellArgs, payload)
+                successfulBatches = successfulBatches + #batch
+                
+                print("✔️ Fired remote for a chunk of " .. tostring(#batch) .. " items...")
+                task.wait(0.3) 
+            end
+            print("💰 Successfully sold a total of " .. tostring(successfulBatches) .. " items in the background!")
         end
     end)
     
-    -- 6. Return and Reset
-    remoteEvent:FireServer(unpack(returnArgs))
-    task.wait(returnWaitTime)
+    print("🔄 Run complete. Waiting 3 seconds before next loop.")
+    task.wait(3)
 end
