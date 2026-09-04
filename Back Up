@@ -119,7 +119,7 @@ local itemsToSell = {
     "Crimson Crystal", "Infernal Rose", "Hellfire", "Treant Essence"
 }
 
-local killTime = 20 
+local killTime = 15 
 local savedStageCFrame = nil 
 
 local function findItemID(labelObj)
@@ -164,23 +164,22 @@ while true do
             print("🛫 First Loop: Tracking flight to learn Stage coordinates...")
             task.wait(3) 
             
-            local maxWait = 30
+            local maxWait = 120 -- Much longer wait time to ensure the broom ride completes
             local elapsed = 0
             while elapsed < maxWait do
                 local prevPos = hrp.Position
-                task.wait(0.5)
-                elapsed = elapsed + 0.5
+                task.wait(2) -- Checks every 2 seconds instead of 0.5s to ignore small lag stutters
+                elapsed = elapsed + 2
                 if (hrp.Position - prevPos).Magnitude < 1 then break end
             end
             
             print("⏳ Arrived! Waiting 5 seconds to ensure we are firmly on the ground...")
-            task.wait(5) -- Adjusted to your 5 second preference
+            task.wait(5) 
             savedStageCFrame = hrp.CFrame
         else
             print("⚡ Fast Travel: Loading map and teleporting...")
             task.wait(0.5) 
             
-            -- Pre-load the area to prevent "Gameplay Paused"
             pcall(function()
                 player:RequestStreamAroundAsync(savedStageCFrame.Position)
             end)
@@ -190,9 +189,8 @@ while true do
                 if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
                     local currentHRP = player.Character.HumanoidRootPart
                     currentHRP.CFrame = savedStageCFrame
-                    currentHRP.Velocity = Vector3.new(0, 0, 0) -- Kill weird physics momentum
+                    currentHRP.Velocity = Vector3.new(0, 0, 0) 
                     
-                    -- Force character out of the flying state
                     local humanoid = player.Character:FindFirstChild("Humanoid")
                     if humanoid then
                         humanoid:ChangeState(Enum.HumanoidStateType.Landed)
