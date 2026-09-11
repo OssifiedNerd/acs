@@ -4,10 +4,53 @@ local VirtualUser = game:GetService("VirtualUser")
 local TeleportService = game:GetService("TeleportService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local GuiService = game:GetService("GuiService")
+local CoreGui = pcall(function() return game:GetService("CoreGui").Name end) and game:GetService("CoreGui") or Players.LocalPlayer:WaitForChild("PlayerGui")
 
 local player = Players.LocalPlayer
 local remoteEvent = ReplicatedStorage.Msg.RemoteEvent.NetWorkRemoteEvent
 local remoteFunc = ReplicatedStorage.Msg.RemoteFunction.NetWorkRemoteFunction
+
+-- ==========================================
+-- 0. SIMPLE TOGGLE UI
+-- ==========================================
+local uiName = "Stage33_Farm_UI"
+if CoreGui:FindFirstChild(uiName) then
+    CoreGui[uiName]:Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = uiName
+ScreenGui.Parent = CoreGui
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 160, 0, 40)
+Frame.Position = UDim2.new(0.5, -80, 0, 20)
+Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Frame.BorderSizePixel = 2
+Frame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+Frame.Parent = ScreenGui
+
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Size = UDim2.new(1, 0, 1, 0)
+ToggleButton.Text = "Auto Farm: ON"
+ToggleButton.TextColor3 = Color3.fromRGB(0, 255, 0)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+ToggleButton.Font = Enum.Font.SourceSansBold
+ToggleButton.TextSize = 18
+ToggleButton.Parent = Frame
+
+local isRunning = true
+
+ToggleButton.MouseButton1Click:Connect(function()
+    isRunning = not isRunning
+    if isRunning then
+        ToggleButton.Text = "Auto Farm: ON"
+        ToggleButton.TextColor3 = Color3.fromRGB(0, 255, 0)
+    else
+        ToggleButton.Text = "Auto Farm: OFF"
+        ToggleButton.TextColor3 = Color3.fromRGB(255, 50, 50)
+    end
+end)
 
 -- ==========================================
 -- 1. ANTI-AFK SYSTEM
@@ -23,6 +66,7 @@ end)
 -- ==========================================
 task.spawn(function()
     while task.wait(0.1) do
+        if not isRunning then continue end
         pcall(function()
             for _, obj in ipairs(player.PlayerGui:GetDescendants()) do
                 if obj:IsA("GuiButton") and obj.Visible then
@@ -57,10 +101,12 @@ end)
 -- ==========================================
 task.spawn(function()
     while true do
-        for i = 1, 12 do
-            local args = {"\233\162\134\229\143\150\229\156\168\231\186\191\229\165\150\229\138\177", i}
-            pcall(function() remoteFunc:InvokeServer(unpack(args)) end)
-            task.wait(0.2)
+        if isRunning then
+            for i = 1, 12 do
+                local args = {"\233\162\134\229\143\150\229\156\168\231\186\191\229\165\150\229\138\177", i}
+                pcall(function() remoteFunc:InvokeServer(unpack(args)) end)
+                task.wait(0.2)
+            end
         end
         task.wait(60) 
     end
@@ -69,7 +115,9 @@ end)
 task.spawn(function()
     local damageArgs = {"\232\174\173\231\187\131\231\130\185\229\177\143", {}}
     while task.wait() do
-        pcall(function() remoteFunc:InvokeServer(unpack(damageArgs)) end)
+        if isRunning then
+            pcall(function() remoteFunc:InvokeServer(unpack(damageArgs)) end)
+        end
     end
 end)
 
@@ -77,11 +125,11 @@ end)
 -- 3. AUTO-REJOIN & COUNTDOWN
 -- ==========================================
 task.spawn(function()
-    local minutesLeft = 9999
+    local minutesLeft = 51
     local elapsedMinutes = 0
     
     while minutesLeft > 0 do
-        if elapsedMinutes == 2 then
+        if isRunning and elapsedMinutes == 2 then
             pcall(function()
                 local inventoryKey = Enum.KeyCode.Backquote
                 VirtualInputManager:SendKeyEvent(true, inventoryKey, false, game)
@@ -119,7 +167,7 @@ local itemsToSell = {
     "Crimson Crystal", "Infernal Rose", "Hellfire", "Treant Essence"
 }
 
-local killTime = 15 
+local killTime = 3 
 local savedStageCFrame = nil 
 
 local function findItemID(labelObj)
@@ -150,6 +198,12 @@ local function findItemID(labelObj)
 end
 
 while true do
+    -- Check if UI toggle is paused before starting a new run
+    if not isRunning then
+        task.wait(1)
+        continue
+    end
+
     -- 1. Setup & Request Stage
     remoteEvent:FireServer(unpack(preDungeonArgs))
     task.wait(0.5)
@@ -164,11 +218,11 @@ while true do
             print("🛫 First Loop: Tracking flight to learn Stage coordinates...")
             task.wait(3) 
             
-            local maxWait = 120 -- Much longer wait time to ensure the broom ride completes
+            local maxWait = 120 
             local elapsed = 0
             while elapsed < maxWait do
                 local prevPos = hrp.Position
-                task.wait(2) -- Checks every 2 seconds instead of 0.5s to ignore small lag stutters
+                task.wait(2)
                 elapsed = elapsed + 2
                 if (hrp.Position - prevPos).Magnitude < 1 then break end
             end
@@ -177,8 +231,7 @@ while true do
             task.wait(5) 
             savedStageCFrame = hrp.CFrame
         else
-            print("⚡ Fast Travel: Loading map and teleporting...")
-            task.wait(0.5) 
+            print("⚡ Fast Travel: Teleporting instantly!")
             
             pcall(function()
                 player:RequestStreamAroundAsync(savedStageCFrame.Position)
@@ -189,7 +242,7 @@ while true do
                 if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
                     local currentHRP = player.Character.HumanoidRootPart
                     currentHRP.CFrame = savedStageCFrame
-                    currentHRP.Velocity = Vector3.new(0, 0, 0) 
+                    currentHRP.Velocity = Vector3.new(0, 0, 0)
                     
                     local humanoid = player.Character:FindFirstChild("Humanoid")
                     if humanoid then
@@ -197,6 +250,23 @@ while true do
                     end
                 end
                 task.wait(0.05)
+            end
+            
+            -- Post-Teleport Validation Check
+            task.wait(0.5)
+            local currentPos = player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character.HumanoidRootPart.Position
+            if currentPos and (currentPos - savedStageCFrame.Position).Magnitude > 50 then
+                print("⚠️ Server rejected instant TP! Allowing broom ride to complete cleanly...")
+                local maxWait = 60
+                local elapsed = 0
+                while elapsed < maxWait do
+                    local prevPos = player.Character.HumanoidRootPart.Position
+                    task.wait(2)
+                    elapsed = elapsed + 2
+                    if (player.Character.HumanoidRootPart.Position - prevPos).Magnitude < 1 then break end
+                end
+            else
+                print("📍 Teleport confirmed and accepted by server!")
             end
         end
     end
@@ -233,7 +303,7 @@ while true do
     -- 4. Return to Town
     print("📥 Firing Return Remote...")
     remoteEvent:FireServer(unpack(returnArgs))
-    task.wait(2) 
+    task.wait(0.1) 
 
     -- 5. CHUNK SELLING PHASE
     pcall(function()
@@ -272,7 +342,6 @@ while true do
                 remoteFunc:InvokeServer(sellArgs, payload)
                 successfulBatches = successfulBatches + #batch
                 
-                print("✔️ Fired remote for a chunk of " .. tostring(#batch) .. " items...")
                 task.wait(0.3) 
             end
             print("💰 Successfully sold a total of " .. tostring(successfulBatches) .. " items in the background!")
@@ -280,5 +349,5 @@ while true do
     end)
     
     print("🔄 Run complete. Waiting 3 seconds before next loop.")
-    task.wait(3)
+    task.wait(0.1)
 end
